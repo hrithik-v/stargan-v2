@@ -143,9 +143,9 @@ if __name__ == '__main__':
                         help='Seed for random number generator')
 
     # directory for training
-    parser.add_argument('--train_img_dir', type=str, default='/kaggle/input/data',
+    parser.add_argument('--train_img_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
                         help='Directory containing training images')
-    parser.add_argument('--val_img_dir', type=str, default='/kaggle/input/data',
+    parser.add_argument('--val_img_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
                         help='Directory containing validation images')
     parser.add_argument('--sample_dir', type=str, default='expr/samples',
                         help='Directory for saving generated images')
