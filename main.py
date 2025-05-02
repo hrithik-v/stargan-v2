@@ -112,26 +112,14 @@ if __name__ == '__main__':
     # training arguments
     parser.add_argument('--randcrop_prob', type=float, default=0.5,
                         help='Probabilty of using random-resized cropping')
-    parser.add_argument('--total_iters', type=int, default=100000,
-                        help='Number of total iterations')
-    parser.add_argument('--resume_iter', type=int, default=0,
-                        help='Iterations to resume training/testing')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='Batch size for training')
-    parser.add_argument('--val_batch_size', type=int, default=32,
-                        help='Batch size for validation')
-    parser.add_argument('--lr', type=float, default=1e-4,
-                        help='Learning rate for D, E and G')
-    parser.add_argument('--f_lr', type=float, default=1e-6,
-                        help='Learning rate for F')
-    parser.add_argument('--beta1', type=float, default=0.0,
-                        help='Decay rate for 1st moment of Adam')
-    parser.add_argument('--beta2', type=float, default=0.99,
-                        help='Decay rate for 2nd moment of Adam')
-    parser.add_argument('--weight_decay', type=float, default=1e-4,
-                        help='Weight decay for optimizer')
-    parser.add_argument('--num_outs_per_domain', type=int, default=10,
-                        help='Number of generated images per domain during sampling')
+    parser.add_argument('--total_epochs', type=int, default=100,
+                        help='Number of total epochs')
+    parser.add_argument('--resume_epoch', type=int, default=0,
+                        help='Epoch to resume training/testing')
+    parser.add_argument('--save_every_epochs', type=int, default=5,
+                        help='Save checkpoint every N epochs')
 
     # misc
     parser.add_argument('--mode', type=str, required=True,
@@ -173,10 +161,12 @@ if __name__ == '__main__':
     parser.add_argument('--lm_path', type=str, default='expr/checkpoints/celeba_lm_mean.npz')
 
     # step size
-    parser.add_argument('--print_every', type=int, default=10)
-    parser.add_argument('--sample_every', type=int, default=5000)
-    parser.add_argument('--save_every', type=int, default=10000)
-    parser.add_argument('--eval_every', type=int, default=50000)
+    parser.add_argument('--print_every', type=int, default=2,
+                        help='Print (batch) every N steps')
+    parser.add_argument('--sample_every', type=int, default=5000,
+                        help='Sample images every N steps')
+    parser.add_argument('--eval_every', type=int, default=0,
+                        help='Evaluate metrics every N steps')
 
     args = parser.parse_args()
     main(args)
