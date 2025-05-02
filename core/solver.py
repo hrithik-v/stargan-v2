@@ -20,7 +20,6 @@ import torch.nn.functional as F
 
 from core.model import build_model
 from core.checkpoint import CheckpointIO
-from core.data_loader import InputFetcher
 import core.utils as utils
 from metrics.eval import calculate_metrics
 import wandb
@@ -93,10 +92,10 @@ class Solver(nn.Module):
         nets_ema = self.nets_ema
         optims = self.optims
 
-        # fetch random validation images for debugging
-        fetcher = InputFetcher(loaders.src, loaders.ref, args.latent_dim, 'train')
-        fetcher_val = InputFetcher(loaders.val, None, args.latent_dim, 'val')
-        inputs_val = next(fetcher_val)
+        # fetch random validation batch for debugging
+        val_iter = iter(loaders.val)
+        x_val, y_val = next(val_iter)
+        x_val, y_val = x_val.to(self.device), y_val.to(self.device)
 
         # resume training if necessary (by epoch)
         if args.resume_epoch > 0:
@@ -110,15 +109,15 @@ class Solver(nn.Module):
         # epoch-based loop
         for epoch in range(args.resume_epoch, args.total_epochs):
             pbar = tqdm(total=num_iters, desc=f"Epoch {epoch+1}/{args.total_epochs}")
-            # reset dataset iterators per epoch
-            fetcher.iter = None
-            fetcher.iter_ref = None
-            for i in range(num_iters):
-                # fetch images and labels
-                inputs = next(fetcher)
-                x_real, y_org = inputs.x_src, inputs.y_src
-                x_ref, x_ref2, y_trg = inputs.x_ref, inputs.x_ref2, inputs.y_ref
-                z_trg, z_trg2 = inputs.z_trg, inputs.z_trg2
+            src_iter = iter(loaders.src)
+            ref_iter = iter(loaders.ref)
+            for i, ((x_real, y_org), (x_ref, x_ref2, y_trg)) in enumerate(zip(src_iter, ref_iter)):
+                # move inputs to device
+                x_real, y_org = x_real.to(self.device), y_org.to(self.device)
+                x_ref, x_ref2, y_trg = x_ref.to(self.device), x_ref2.to(self.device), y_trg.to(self.device)
+                # sample latent codes
+                z_trg = torch.randn(x_real.size(0), args.latent_dim, device=self.device)
+                z_trg2 = torch.randn(x_real.size(0), args.latent_dim, device=self.device)
 
                 masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
@@ -177,7 +176,7 @@ class Solver(nn.Module):
                 # generate images for debugging
                 if (i+1) % args.sample_every == 0:
                     os.makedirs(args.sample_dir, exist_ok=True)
-                    utils.debug_image(nets_ema, args, inputs=inputs_val,
+                    utils.debug_image(nets_ema, args, inputs=(x_val, y_val),
                                       step=epoch * num_iters + i + 1)
 
                 # compute FID and LPIPS if necessary
@@ -200,16 +199,18 @@ class Solver(nn.Module):
         os.makedirs(args.result_dir, exist_ok=True)
         self._load_checkpoint(args.resume_iter)
 
-        src = next(InputFetcher(loaders.src, None, args.latent_dim, 'test'))
-        ref = next(InputFetcher(loaders.ref, None, args.latent_dim, 'test'))
+        # fetch one batch for sampling
+        src, y_src = next(iter(loaders.src))
+        ref, y_ref = next(iter(loaders.ref))
+        src, ref = src.to(self.device), ref.to(self.device)
 
         fname = ospj(args.result_dir, 'reference.jpg')
         print('Working on {}...'.format(fname))
-        utils.translate_using_reference(nets_ema, args, src.x, ref.x, ref.y, fname)
+        utils.translate_using_reference(nets_ema, args, src, ref, y_ref, fname)
 
         fname = ospj(args.result_dir, 'video_ref.mp4')
         print('Working on {}...'.format(fname))
-        utils.video_ref(nets_ema, args, src.x, ref.x, ref.y, fname)
+        utils.video_ref(nets_ema, args, src, ref, y_ref, fname)
 
     @torch.no_grad()
     def evaluate(self):

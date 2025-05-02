@@ -40,16 +40,12 @@ def main(args):
         assert len(subdirs(args.train_img_dir)) == args.num_domains
         assert len(subdirs(args.val_img_dir)) == args.num_domains
         loaders = Munch(src=get_train_loader(root=args.train_img_dir,
-                                             which='source',
                                              img_size=args.img_size,
                                              batch_size=args.batch_size,
-                                             prob=args.randcrop_prob,
                                              num_workers=args.num_workers),
                         ref=get_train_loader(root=args.train_img_dir,
-                                             which='reference',
                                              img_size=args.img_size,
                                              batch_size=args.batch_size,
-                                             prob=args.randcrop_prob,
                                              num_workers=args.num_workers),
                         val=get_test_loader(root=args.val_img_dir,
                                             img_size=args.img_size,
