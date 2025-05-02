@@ -17,6 +17,7 @@ from munch import Munch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from core.model import build_model
 from core.checkpoint import CheckpointIO
@@ -57,7 +58,7 @@ class Solver(nn.Module):
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
 
             # initialize wandb
-            wandb.init(project="stargan_v2", config=vars(args))
+            wandb.init(project="stargan_v2", name="master", config=vars(args))
             # watch networks for logging gradients and parameters
             # for name, net in self.nets.items():
             #     if name in ['generator', 'discriminator']:  # Specify networks to watch
@@ -106,7 +107,8 @@ class Solver(nn.Module):
 
         print('Start training...')
         start_time = time.time()
-        for i in range(args.resume_iter, args.total_iters):
+        pbar = tqdm(range(args.resume_iter, args.total_iters), desc="Training", initial=args.resume_iter, total=args.total_iters)
+        for i in pbar:
             # fetch images and labels
             inputs = next(fetcher)
             x_real, y_org = inputs.x_src, inputs.y_src
@@ -167,6 +169,7 @@ class Solver(nn.Module):
                 print(log)
                 # log losses to wandb
                 wandb.log(all_losses, step=i+1)
+                pbar.set_postfix(all_losses)
 
             # generate images for debugging
             # if (i+1) % args.sample_every == 0:

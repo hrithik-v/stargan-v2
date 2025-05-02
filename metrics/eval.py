@@ -34,7 +34,7 @@ def calculate_metrics(nets, args, step, mode):
     print('Number of domains: %d' % num_domains)
 
     lpips_dict = OrderedDict()
-    for trg_idx, trg_domain in enumerate(domains):
+    for trg_idx, trg_domain in enumerate(tqdm(domains, desc='Target domains', total=num_domains)):
         src_domains = [x for x in domains if x != trg_domain]
 
         if mode == 'reference':
@@ -45,7 +45,7 @@ def calculate_metrics(nets, args, step, mode):
                                          imagenet_normalize=False,
                                          drop_last=True)
 
-        for src_idx, src_domain in enumerate(src_domains):
+        for src_idx, src_domain in enumerate(tqdm(src_domains, desc=f'Src domains for {trg_domain}', total=len(src_domains), leave=False)):
             path_src = os.path.join(args.val_img_dir, src_domain)
             loader_src = get_eval_loader(root=path_src,
                                          img_size=args.img_size,
@@ -122,10 +122,10 @@ def calculate_metrics(nets, args, step, mode):
 def calculate_fid_for_all_tasks(args, domains, step, mode):
     print('Calculating FID for all tasks...')
     fid_values = OrderedDict()
-    for trg_domain in domains:
+    for trg_domain in tqdm(domains, desc='FID target domains', total=len(domains)):
         src_domains = [x for x in domains if x != trg_domain]
 
-        for src_domain in src_domains:
+        for src_domain in tqdm(src_domains, desc=f'FID src for {trg_domain}', total=len(src_domains), leave=False):
             task = '%s2%s' % (src_domain, trg_domain)
             path_real = os.path.join(args.train_img_dir, trg_domain)
             path_fake = os.path.join(args.eval_dir, task)
