@@ -120,6 +120,21 @@ if __name__ == '__main__':
                         help='Epoch to resume training/testing')
     parser.add_argument('--save_every_epochs', type=int, default=5,
                         help='Save checkpoint every N epochs')
+    
+    parser.add_argument('--val_batch_size', type=int, default=32,
+                        help='Batch size for validation')
+    parser.add_argument('--lr', type=float, default=1e-4,
+                        help='Learning rate for D, E and G')
+    parser.add_argument('--f_lr', type=float, default=1e-6,
+                        help='Learning rate for F')
+    parser.add_argument('--beta1', type=float, default=0.0,
+                        help='Decay rate for 1st moment of Adam')
+    parser.add_argument('--beta2', type=float, default=0.99,
+                        help='Decay rate for 2nd moment of Adam')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='Weight decay for optimizer')
+    parser.add_argument('--num_outs_per_domain', type=int, default=10,
+                        help='Number of generated images per domain during sampling')
 
     # misc
     parser.add_argument('--mode', type=str, required=True,
