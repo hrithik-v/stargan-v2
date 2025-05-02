@@ -23,6 +23,7 @@ from core.checkpoint import CheckpointIO
 from core.data_loader import InputFetcher
 import core.utils as utils
 from metrics.eval import calculate_metrics
+import wandb
 
 
 class Solver(nn.Module):
@@ -54,6 +55,15 @@ class Solver(nn.Module):
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **self.nets),
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
+
+            # initialize wandb
+            wandb.init(project="stargan_v2", config=vars(args))
+            # watch networks for logging gradients and parameters
+            # for name, net in self.nets.items():
+            #     if name in ['generator', 'discriminator']:  # Specify networks to watch
+            #         wandb.watch(net, log="all", log_freq=args.print_every)
+                # To disable entirely, comment out the wandb.watch line:
+                # pass
         else:
             self.ckptios = [CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema)]
 
@@ -155,6 +165,8 @@ class Solver(nn.Module):
                 all_losses['G/lambda_ds'] = args.lambda_ds
                 log += ' '.join(['%s: [%.4f]' % (key, value) for key, value in all_losses.items()])
                 print(log)
+                # log losses to wandb
+                wandb.log(all_losses, step=i+1)
 
             # generate images for debugging
             if (i+1) % args.sample_every == 0:
