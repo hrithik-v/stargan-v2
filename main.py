@@ -173,10 +173,10 @@ if __name__ == '__main__':
     parser.add_argument('--lm_path', type=str, default='expr/checkpoints/celeba_lm_mean.npz')
 
     # step size
-    parser.add_argument('--print_every', type=int, default=10)
+    parser.add_argument('--print_every', type=int, default=100)
     parser.add_argument('--sample_every', type=int, default=5000)
-    parser.add_argument('--save_every', type=int, default=10000)
-    parser.add_argument('--eval_every', type=int, default=50000)
+    parser.add_argument('--save_every', type=int, default=500)
+    parser.add_argument('--eval_every', type=int, default=500)
 
     args = parser.parse_args()
     main(args)
