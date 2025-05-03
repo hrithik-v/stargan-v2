@@ -106,13 +106,13 @@ if __name__ == '__main__':
                         help='Weight for diversity sensitive loss')
     parser.add_argument('--ds_iter', type=int, default=100000,
                         help='Number of iterations to optimize diversity sensitive loss')
-    parser.add_argument('--w_hpf', type=float, default=0.0,
+    parser.add_argument('--w_hpf', type=float, default=0,
                         help='weight for high-pass filtering')
 
     # training arguments
     parser.add_argument('--randcrop_prob', type=float, default=0.5,
                         help='Probabilty of using random-resized cropping')
-    parser.add_argument('--total_iters', type=int, default=100000,
+    parser.add_argument('--total_iters', type=int, default=25000,
                         help='Number of total iterations')
     parser.add_argument('--resume_iter', type=int, default=0,
                         help='Iterations to resume training/testing')
@@ -142,6 +142,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42,
                         help='Seed for random number generator')
 
+    parser.add_argument('--ema', type=bool, default=False)
+
     # directory for training
     parser.add_argument('--train_img_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
                         help='Directory containing training images')
@@ -149,11 +151,11 @@ if __name__ == '__main__':
                         help='Directory containing validation images')
     parser.add_argument('--sample_dir', type=str, default='expr/samples',
                         help='Directory for saving generated images')
-    parser.add_argument('--checkpoint_dir', type=str, default='starganv2/v1/',
+    parser.add_argument('--checkpoint_dir', type=str, default='/kaggle/working/checkpoints/starganv2/',
                         help='Directory for saving network checkpoints')
 
     # directory for calculating metrics
-    parser.add_argument('--eval_dir', type=str, default='expr/eval',
+    parser.add_argument('--eval_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
                         help='Directory for saving metrics, i.e., FID and LPIPS')
 
     # directory for testing
@@ -173,10 +175,14 @@ if __name__ == '__main__':
     parser.add_argument('--lm_path', type=str, default='expr/checkpoints/celeba_lm_mean.npz')
 
     # step size
-    parser.add_argument('--print_every', type=int, default=50)
+    # parser.add_argument('--print_every', type=int, default=50)
     parser.add_argument('--sample_every', type=int, default=5000)
-    parser.add_argument('--save_every', type=int, default=500)
-    parser.add_argument('--eval_every', type=int, default=500)
+    parser.add_argument('--save_every', type=int, default=2500)
+    parser.add_argument('--eval_every', type=int, default=1000)
+    parser.add_argument('--wandb_log', type=int, default=500)
+
+    parser.add_argument('--wandb_name', type=str, default="master")
+    parser.add_argument('--wandb_project', type=str, default="starganv2")
 
     args = parser.parse_args()
     main(args)

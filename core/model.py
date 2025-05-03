@@ -293,7 +293,9 @@ def build_model(args):
                  mapping_network=mapping_network,
                  style_encoder=style_encoder,
                  discriminator=discriminator)
-    nets_ema = Munch(generator=generator_ema,
+    
+    if args.ema:
+        nets_ema = Munch(generator=generator_ema,
                      mapping_network=mapping_network_ema,
                      style_encoder=style_encoder_ema)
 

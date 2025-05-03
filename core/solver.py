@@ -54,11 +54,11 @@ class Solver(nn.Module):
 
             self.ckptios = [
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **self.nets),
-                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
+                # CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
 
             # initialize wandb
-            wandb.init(project="stargan_v2", name="master", config=vars(args))
+            wandb.init(project=args.wandb_project, name=args.wandb_name, config=vars(args))
             # watch networks for logging gradients and parameters
             # for name, net in self.nets.items():
             #     if name in ['generator', 'discriminator']:  # Specify networks to watch
@@ -145,31 +145,39 @@ class Solver(nn.Module):
             g_loss.backward()
             optims.generator.step()
 
+            # update tqdm postfix with loss metrics every iteration
+            all_losses = {}
+            for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
+                                    ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']):
+                for key, value in loss.items():
+                    all_losses[prefix + key] = value
+            all_losses['G/lambda_ds'] = args.lambda_ds
+            pbar.set_postfix(all_losses)
+
             # compute moving average of network parameters
-            moving_average(nets.generator, nets_ema.generator, beta=0.999)
-            moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
-            moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
+
+            if args.ema:
+                moving_average(nets.generator, nets_ema.generator, beta=0.999)
+                moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
+                moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
 
             # decay weight for diversity sensitive loss
             if args.lambda_ds > 0:
                 args.lambda_ds -= (initial_lambda_ds / args.ds_iter)
 
-            # print out log info
-            if (i+1) % args.print_every == 0:
-                elapsed = time.time() - start_time
-                elapsed = str(datetime.timedelta(seconds=elapsed))[:-7]
-                log = "Elapsed time [%s], Iteration [%i/%i], " % (elapsed, i+1, args.total_iters)
-                all_losses = dict()
-                for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
-                                        ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']):
-                    for key, value in loss.items():
-                        all_losses[prefix + key] = value
-                all_losses['G/lambda_ds'] = args.lambda_ds
-                log += ' '.join(['%s: [%.4f]' % (key, value) for key, value in all_losses.items()])
-                print(log)
+            if (i+1) % args.wandb_log ==0:
                 # log losses to wandb
                 wandb.log(all_losses, step=i+1)
-                pbar.set_postfix(all_losses)
+
+            # print out log info
+            # if (i+1) % args.print_every == 0:
+            #     elapsed = time.time() - start_time
+            #     elapsed = str(datetime.timedelta(seconds=elapsed))[:-7]
+            #     log = "Elapsed time [%s], Iteration [%i/%i], " % (elapsed, i+1, args.total_iters)
+            #     log += ' '.join(['%s: [%.4f]' % (key, value) for key, value in all_losses.items()])
+            #     print(log)
+            #     log losses to wandb
+            #     wandb.log(all_losses, step=i+1)
 
             # generate images for debugging
             # if (i+1) % args.sample_every == 0:
@@ -182,13 +190,13 @@ class Solver(nn.Module):
 
             # compute FID and LPIPS if necessary
             if (i+1) % args.eval_every == 0:
-                calculate_metrics(nets_ema, args, i+1, mode='latent')
-                calculate_metrics(nets_ema, args, i+1, mode='reference')
+                calculate_metrics(nets, args, i+1, mode='latent')
+                calculate_metrics(nets, args, i+1, mode='reference')
 
     @torch.no_grad()
     def sample(self, loaders):
         args = self.args
-        nets_ema = self.nets_ema
+        nets_ema = self.nets
         os.makedirs(args.result_dir, exist_ok=True)
         self._load_checkpoint(args.resume_iter)
 
@@ -206,11 +214,11 @@ class Solver(nn.Module):
     @torch.no_grad()
     def evaluate(self):
         args = self.args
-        nets_ema = self.nets_ema
+        nets = self.nets
         resume_iter = args.resume_iter
         self._load_checkpoint(args.resume_iter)
-        calculate_metrics(nets_ema, args, step=resume_iter, mode='latent')
-        calculate_metrics(nets_ema, args, step=resume_iter, mode='reference')
+        calculate_metrics(nets, args, step=resume_iter, mode='latent')
+        calculate_metrics(nets, args, step=resume_iter, mode='reference')
 
 
 def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, masks=None):
