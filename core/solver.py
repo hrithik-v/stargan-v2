@@ -15,6 +15,7 @@ import datetime
 from munch import Munch
 
 import torch
+from torch.cuda.amp import autocast, GradScaler
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -32,6 +33,8 @@ class Solver(nn.Module):
         super().__init__()
         self.args = args
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # mixed-precision scaler
+        self.scaler = GradScaler()
 
         self.nets, self.nets_ema = build_model(args)
         # below setattrs are to make networks be children of Solver, e.g., for self.to(self.device)
@@ -68,7 +71,8 @@ class Solver(nn.Module):
         else:
             self.ckptios = [CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema)]
 
-        self.to(self.device)
+        # move to device and use channels_last memory format for conv performance
+        self.to(self.device, memory_format=torch.channels_last)
         for name, network in self.named_children():
             # Do not initialize the FAN parameters
             if ('ema' not in name) and ('fan' not in name):
@@ -117,33 +121,43 @@ class Solver(nn.Module):
 
             masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
-            # train the discriminator
-            d_loss, d_losses_latent = compute_d_loss(
-                nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
+            # train the discriminator (real)
+            with autocast():
+                d_loss, d_losses_latent = compute_d_loss(
+                    nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
             self._reset_grad()
-            d_loss.backward()
-            optims.discriminator.step()
+            self.scaler.scale(d_loss).backward()
+            self.scaler.step(optims.discriminator)
+            self.scaler.update()
 
-            d_loss, d_losses_ref = compute_d_loss(
-                nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
+            # train the discriminator (ref)
+            with autocast():
+                d_loss, d_losses_ref = compute_d_loss(
+                    nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
             self._reset_grad()
-            d_loss.backward()
-            optims.discriminator.step()
+            self.scaler.scale(d_loss).backward()
+            self.scaler.step(optims.discriminator)
+            self.scaler.update()
 
-            # train the generator
-            g_loss, g_losses_latent = compute_g_loss(
-                nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
+            # train the generator (latent)
+            with autocast():
+                g_loss, g_losses_latent = compute_g_loss(
+                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
             self._reset_grad()
-            g_loss.backward()
-            optims.generator.step()
-            optims.mapping_network.step()
-            optims.style_encoder.step()
+            self.scaler.scale(g_loss).backward()
+            self.scaler.step(optims.generator)
+            self.scaler.step(optims.mapping_network)
+            self.scaler.step(optims.style_encoder)
+            self.scaler.update()
 
-            g_loss, g_losses_ref = compute_g_loss(
-                nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
+            # train the generator (ref)
+            with autocast():
+                g_loss, g_losses_ref = compute_g_loss(
+                    nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
             self._reset_grad()
-            g_loss.backward()
-            optims.generator.step()
+            self.scaler.scale(g_loss).backward()
+            self.scaler.step(optims.generator)
+            self.scaler.update()
 
             # update tqdm postfix with loss metrics every iteration
             all_losses = {}

@@ -90,10 +90,12 @@ if __name__ == '__main__':
                         help='Number of domains')
     parser.add_argument('--latent_dim', type=int, default=16,
                         help='Latent vector dimension')
-    parser.add_argument('--hidden_dim', type=int, default=512,
+    parser.add_argument('--hidden_dim', type=int, default=256,
                         help='Hidden dimension of mapping network')
-    parser.add_argument('--style_dim', type=int, default=64,
+    parser.add_argument('--style_dim', type=int, default=32,
                         help='Style code dimension')
+    parser.add_argument('--max_conv_dim', type=int, default=256,
+                        help='Maximum convolution dimension for generator, encoder, and discriminator')
 
     # weight for objective functions
     parser.add_argument('--lambda_reg', type=float, default=1,
