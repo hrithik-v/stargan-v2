@@ -38,8 +38,8 @@ class Solver(nn.Module):
         for name, module in self.nets.items():
             utils.print_network(module, name)
             setattr(self, name, module)
-        for name, module in self.nets_ema.items():
-            setattr(self, name + '_ema', module)
+        # for name, module in self.nets_ema.items():
+        #     setattr(self, name + '_ema', module)
 
         if args.mode == 'train':
             self.optims = Munch()
