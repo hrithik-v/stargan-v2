@@ -285,9 +285,6 @@ def build_model(args):
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
     style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains))
     discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains))
-    generator_ema = copy.deepcopy(generator)
-    mapping_network_ema = copy.deepcopy(mapping_network)
-    style_encoder_ema = copy.deepcopy(style_encoder)
 
     nets = Munch(generator=generator,
                  mapping_network=mapping_network,
@@ -295,7 +292,12 @@ def build_model(args):
                  discriminator=discriminator)
     
     nets_ema = None
+
     if args.ema:
+        generator_ema = copy.deepcopy(generator)
+        mapping_network_ema = copy.deepcopy(mapping_network)
+        style_encoder_ema = copy.deepcopy(style_encoder)
+        
         nets_ema = Munch(generator=generator_ema,
                      mapping_network=mapping_network_ema,
                      style_encoder=style_encoder_ema)

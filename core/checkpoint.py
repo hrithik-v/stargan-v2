@@ -24,7 +24,7 @@ class CheckpointIO(object):
 
     def save(self, step):
         fname = self.fname_template.format(step)
-        print('Saving checkpoint into %s...' % fname)
+        print('\nSaving checkpoint into %s...' % fname)
         outdict = {}
         for name, module in self.module_dict.items():
             if self.data_parallel:
