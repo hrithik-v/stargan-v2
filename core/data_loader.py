@@ -116,7 +116,7 @@ def get_train_loader(root, which='source', img_size=256,
                            batch_size=batch_size,
                            sampler=sampler,
                            num_workers=num_workers,
-                           pin_memory=True,
+                           pin_memory=False,
                            drop_last=True)
 
 
@@ -145,7 +145,7 @@ def get_eval_loader(root, img_size=256, batch_size=32,
                            batch_size=batch_size,
                            shuffle=shuffle,
                            num_workers=num_workers,
-                           pin_memory=True,
+                           pin_memory=False,
                            drop_last=drop_last)
 
 
@@ -164,7 +164,7 @@ def get_test_loader(root, img_size=256, batch_size=32,
                            batch_size=batch_size,
                            shuffle=shuffle,
                            num_workers=num_workers,
-                           pin_memory=True)
+                           pin_memory=False)
 
 
 class InputFetcher:
