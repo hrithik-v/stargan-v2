@@ -294,6 +294,7 @@ def build_model(args):
                  style_encoder=style_encoder,
                  discriminator=discriminator)
     
+    nets_ema = None
     if args.ema:
         nets_ema = Munch(generator=generator_ema,
                      mapping_network=mapping_network_ema,
