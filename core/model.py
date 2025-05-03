@@ -21,7 +21,7 @@ from core.wing import FAN
 
 
 class ResBlk(nn.Module):
-    def __init__(self, dim_in, dim_out, actv=nn.LeakyReLU(0.2, inplace=True),
+    def __init__(self, dim_in, dim_out, actv=nn.LeakyReLU(0.2),
                  normalize=False, downsample=False):
         super().__init__()
         self.actv = actv
@@ -79,7 +79,7 @@ class AdaIN(nn.Module):
 
 class AdainResBlk(nn.Module):
     def __init__(self, dim_in, dim_out, style_dim=64, w_hpf=0,
-                 actv=nn.LeakyReLU(0.2, inplace=True), upsample=False):
+                 actv=nn.LeakyReLU(0.2), upsample=False):
         super().__init__()
         self.w_hpf = w_hpf
         self.actv = actv
@@ -143,7 +143,7 @@ class Generator(nn.Module):
         self.decode = nn.ModuleList()
         self.to_rgb = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.2),
             nn.Conv2d(dim_in, 3, 1, 1, 0))
 
         # down/up-sampling blocks
@@ -230,9 +230,9 @@ class StyleEncoder(nn.Module):
             blocks += [ResBlk(dim_in, dim_out, downsample=True)]
             dim_in = dim_out
 
-        blocks += [nn.LeakyReLU(0.2, inplace=True)]
+        blocks += [nn.LeakyReLU(0.2)]
         blocks += [nn.Conv2d(dim_out, dim_out, 4, 1, 0)]
-        blocks += [nn.LeakyReLU(0.2, inplace=True)]
+        blocks += [nn.LeakyReLU(0.2)]
         self.shared = nn.Sequential(*blocks)
 
         self.unshared = nn.ModuleList()
@@ -264,9 +264,9 @@ class Discriminator(nn.Module):
             blocks += [ResBlk(dim_in, dim_out, downsample=True)]
             dim_in = dim_out
 
-        blocks += [nn.LeakyReLU(0.2, inplace=True)]
+        blocks += [nn.LeakyReLU(0.2)]
         blocks += [nn.Conv2d(dim_out, dim_out, 4, 1, 0)]
-        blocks += [nn.LeakyReLU(0.2, inplace=True)]
+        blocks += [nn.LeakyReLU(0.2)]
         blocks += [nn.Conv2d(dim_out, num_domains, 1, 1, 0)]
         self.main = nn.Sequential(*blocks)
 
