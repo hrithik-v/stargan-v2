@@ -131,13 +131,13 @@ class Solver(nn.Module):
             self.scaler.update()
 
             # train the discriminator (ref)
-            with autocast():
+            """ with autocast():
                 d_loss, d_losses_ref = compute_d_loss(
                     nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
             self._reset_grad()
             self.scaler.scale(d_loss).backward()
             self.scaler.step(optims.discriminator)
-            self.scaler.update()
+            self.scaler.update() """
 
             # train the generator (latent)
             with autocast():
@@ -151,18 +151,20 @@ class Solver(nn.Module):
             self.scaler.update()
 
             # train the generator (ref)
-            with autocast():
+            """ with autocast():
                 g_loss, g_losses_ref = compute_g_loss(
                     nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
             self._reset_grad()
             self.scaler.scale(g_loss).backward()
             self.scaler.step(optims.generator)
-            self.scaler.update()
+            self.scaler.update() """
 
             # update tqdm postfix with loss metrics every iteration
             all_losses = {}
-            for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
-                                    ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']):
+            """ for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
+                                    ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']): """
+            for loss, prefix in zip([d_losses_latent, g_losses_latent],
+                                    ['D/latent_', 'G/latent_']):
                 for key, value in loss.items():
                     all_losses[prefix + key] = value
             all_losses['G/lambda_ds'] = args.lambda_ds
@@ -281,7 +283,10 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
 
     # style reconstruction loss
     s_pred = nets.style_encoder(x_fake, y_trg)
-    loss_sty = torch.mean(torch.abs(s_pred - s_trg))
+    
+    s_ref = nets.style_encoder(x_ref, y_trg)
+    loss_sty = torch.mean(torch.abs(s_pred - s_ref))
+    # loss_sty = torch.mean(torch.abs(s_pred - s_trg))
 
     # diversity sensitive loss
     if z_trgs is not None:
