@@ -120,27 +120,26 @@ def translate_using_reference(nets, args, x_src, x_ref, y_ref, filename):
 
 @torch.no_grad()
 def debug_image(nets, args, inputs, step):
-    x_src, y_src = inputs.x_src, inputs.y_src
-    x_ref, y_ref = inputs.x_ref, inputs.y_ref
-
-    device = inputs.x_src.device
-    N = inputs.x_src.size(0)
-
-    # translate and reconstruct (reference-guided)
-    filename = ospj(args.sample_dir, '%06d_cycle_consistency.jpg' % (step))
-    translate_and_reconstruct(nets, args, x_src, y_src, x_ref, y_ref, filename)
-
-    # latent-guided image synthesis
-    y_trg_list = [torch.tensor(y).repeat(N).to(device)
-                  for y in range(min(args.num_domains, 5))]
-    z_trg_list = torch.randn(args.num_outs_per_domain, 1, args.latent_dim).repeat(1, N, 1).to(device)
-    for psi in [0.5, 0.7, 1.0]:
-        filename = ospj(args.sample_dir, '%06d_latent_psi_%.1f.jpg' % (step, psi))
-        translate_using_latent(nets, args, x_src, y_trg_list, z_trg_list, psi, filename)
-
-    # reference-guided image synthesis
-    filename = ospj(args.sample_dir, '%06d_reference.jpg' % (step))
-    translate_using_reference(nets, args, x_src, x_ref, y_ref, filename)
+    # latent-guided style translation only
+    x_src = inputs.x_src
+    device = x_src.device
+    # use a single source image
+    x = x_src[:1]
+    masks = nets.fan.get_heatmap(x) if args.w_hpf > 0 else None
+    latent_dim = args.latent_dim
+    num_domains = min(args.num_domains, 5)
+    num_samples = 4
+    outputs = []
+    for class_id in range(num_domains):
+        y = torch.LongTensor([class_id]).to(device)
+        for _ in range(num_samples):
+            z = torch.randn(1, latent_dim, device=device)
+            s = nets.mapping_network(z, y)
+            x_fake = nets.generator(x, s, masks=masks)
+            outputs.append(x_fake)
+    grid = torch.cat(outputs, dim=0)
+    filename = ospj(args.sample_dir, f"{step:06d}_translation.jpg")
+    save_image(grid, num_samples, filename)
 
 
 # ======================= #

@@ -147,17 +147,17 @@ if __name__ == '__main__':
     parser.add_argument('--ema', type=bool, default=False)
 
     # directory for training
-    parser.add_argument('--train_img_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
+    parser.add_argument('--train_img_dir', type=str, default='/kaggle/working/Five_weather_23k',
                         help='Directory containing training images')
-    parser.add_argument('--val_img_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
+    parser.add_argument('--val_img_dir', type=str, default='/kaggle/working/Five_weather_23k',
                         help='Directory containing validation images')
-    parser.add_argument('--sample_dir', type=str, default='expr/samples',
+    parser.add_argument('--sample_dir', type=str, default='/kaggle/working/samples/starganv2/',
                         help='Directory for saving generated images')
     parser.add_argument('--checkpoint_dir', type=str, default='/kaggle/working/checkpoints/starganv2/',
                         help='Directory for saving network checkpoints')
 
     # directory for calculating metrics
-    parser.add_argument('--eval_dir', type=str, default='/kaggle/working/Weather-Detection-Using-Images/Data',
+    parser.add_argument('--eval_dir', type=str, default='/kaggle/working/Five_weather_23k',
                         help='Directory for saving metrics, i.e., FID and LPIPS')
 
     # directory for testing

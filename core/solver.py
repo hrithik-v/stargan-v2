@@ -142,7 +142,7 @@ class Solver(nn.Module):
             # train the generator (latent)
             with autocast():
                 g_loss, g_losses_latent = compute_g_loss(
-                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
+                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks,x_refs=[x_ref, x_ref2])
             self._reset_grad()
             self.scaler.scale(g_loss).backward()
             self.scaler.step(optims.generator)
@@ -184,6 +184,11 @@ class Solver(nn.Module):
             if (i+1) % args.wandb_log ==0:
                 # log losses to wandb
                 wandb.log(all_losses, step=i+1)
+
+            # generate sample images every 100 iterations
+            if (i+1) % 100 == 0:
+                os.makedirs(args.sample_dir, exist_ok=True)
+                utils.debug_image(nets_ema, args, inputs_val, step=i+1)
 
             # print out log info
             # if (i+1) % args.print_every == 0:
@@ -265,17 +270,20 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
 
 
 def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, masks=None):
-    assert (z_trgs is None) != (x_refs is None)
-    if z_trgs is not None:
-        z_trg, z_trg2 = z_trgs
-    if x_refs is not None:
-        x_ref, x_ref2 = x_refs
+    # assert (z_trgs is None) != (x_refs is None)
+    # if z_trgs is not None:
+    #     z_trg, z_trg2 = z_trgs
+    # if x_refs is not None:
+    #     x_ref, x_ref2 = x_refs
+    z_trg, z_trg2 = z_trgs
+    x_ref, x_ref2 = x_refs
 
     # adversarial loss
-    if z_trgs is not None:
-        s_trg = nets.mapping_network(z_trg, y_trg)
-    else:
-        s_trg = nets.style_encoder(x_ref, y_trg)
+    # if z_trgs is not None:
+    #     s_trg = nets.mapping_network(z_trg, y_trg)
+    # else:
+    #     s_trg = nets.style_encoder(x_ref, y_trg)
+    s_trg = nets.mapping_network(z_trg, y_trg)
 
     x_fake = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
@@ -283,16 +291,18 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
 
     # style reconstruction loss
     s_pred = nets.style_encoder(x_fake, y_trg)
-    
+
     s_ref = nets.style_encoder(x_ref, y_trg)
     loss_sty = torch.mean(torch.abs(s_pred - s_ref))
     # loss_sty = torch.mean(torch.abs(s_pred - s_trg))
 
     # diversity sensitive loss
-    if z_trgs is not None:
-        s_trg2 = nets.mapping_network(z_trg2, y_trg)
-    else:
-        s_trg2 = nets.style_encoder(x_ref2, y_trg)
+    # if z_trgs is not None:
+        # s_trg2 = nets.mapping_network(z_trg2, y_trg)
+    # else:
+        # s_trg2 = nets.style_encoder(x_ref2, y_trg)
+    s_trg2 = nets.mapping_network(z_trg2, y_trg)
+    
     x_fake2 = nets.generator(x_real, s_trg2, masks=masks)
     x_fake2 = x_fake2.detach()
     loss_ds = torch.mean(torch.abs(x_fake - x_fake2))
