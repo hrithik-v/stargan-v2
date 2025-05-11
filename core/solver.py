@@ -97,129 +97,86 @@ class Solver(nn.Module):
         nets_ema = self.nets_ema
         optims = self.optims
 
-        # fetch random validation images for debugging
+        # Fetch random validation images for debugging
         fetcher = InputFetcher(loaders.src, loaders.ref, args.latent_dim, 'train')
         fetcher_val = InputFetcher(loaders.val, None, args.latent_dim, 'val')
         inputs_val = next(fetcher_val)
 
-        # resume training if necessary
-        if args.resume_iter > 0:
-            self._load_checkpoint(args.resume_iter)
-
-        # remember the initial value of ds weight
         initial_lambda_ds = args.lambda_ds
-
         print('Start training...')
         start_time = time.time()
-        pbar = tqdm(range(args.resume_iter, args.total_iters), desc="Training", initial=args.resume_iter, total=args.total_iters)
-        for i in pbar:
-            # fetch images and labels
-            inputs = next(fetcher)
-            x_real, y_org = inputs.x_src, inputs.y_src
-            x_ref, x_ref2, y_trg = inputs.x_ref, inputs.x_ref2, inputs.y_ref
-            z_trg, z_trg2 = inputs.z_trg, inputs.z_trg2
 
-            masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
+        # Determine iterations
+        iters_per_epoch = len(fetcher.loader)
+        num_epochs = args.num_epochs
+        start_epoch = args.resume_epoch if args.resume_epoch > 0 else 0
 
-            # train the discriminator (real)
-            with autocast():
-                d_loss, d_losses_latent = compute_d_loss(
-                    nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
-            self._reset_grad()
-            self.scaler.scale(d_loss).backward()
-            self.scaler.step(optims.discriminator)
-            self.scaler.update()
+        for epoch in range(start_epoch, num_epochs):
+            pbar = tqdm(total=iters_per_epoch, initial=0, desc=f"Epoch {epoch+1}/{num_epochs}", ncols=100)
 
-            # train the discriminator (ref)
-            """ with autocast():
-                d_loss, d_losses_ref = compute_d_loss(
-                    nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
-            self._reset_grad()
-            self.scaler.scale(d_loss).backward()
-            self.scaler.step(optims.discriminator)
-            self.scaler.update() """
+            for batch_idx in range(iters_per_epoch):
 
-            # train the generator (latent)
-            with autocast():
-                g_loss, g_losses_latent = compute_g_loss(
-                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks,x_refs=[x_ref, x_ref2])
-            self._reset_grad()
-            self.scaler.scale(g_loss).backward()
-            self.scaler.step(optims.generator)
-            self.scaler.step(optims.mapping_network)
-            self.scaler.step(optims.style_encoder)
-            self.scaler.update()
+                # Fetch batch
+                inputs = next(fetcher)
+                x_real, y_org = inputs.x_src, inputs.y_src
+                x_ref, x_ref2, y_trg = inputs.x_ref, inputs.x_ref2, inputs.y_ref
+                z_trg, z_trg2 = inputs.z_trg, inputs.z_trg2
+                masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
-            # train the generator (ref)
-            """ with autocast():
-                g_loss, g_losses_ref = compute_g_loss(
-                    nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
-            self._reset_grad()
-            self.scaler.scale(g_loss).backward()
-            self.scaler.step(optims.generator)
-            self.scaler.update() """
+                # Discriminator step
+                with autocast():
+                    d_loss, d_losses_latent = compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
+                self._reset_grad()
+                self.scaler.scale(d_loss).backward()
+                self.scaler.step(optims.discriminator)
+                self.scaler.update()
 
-            # update tqdm postfix with loss metrics every iteration
-            all_losses = {}
-            """ for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
-                                    ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']): """
-            for loss, prefix in zip([d_losses_latent, g_losses_latent],
-                                    ['D/latent_', 'G/latent_']):
-                for key, value in loss.items():
-                    all_losses[prefix + key] = value
-            all_losses['G/lambda_ds'] = args.lambda_ds
-            pbar.set_postfix(all_losses)
+                # Generator step
+                with autocast():
+                    g_loss, g_losses_latent = compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
+                self._reset_grad()
+                self.scaler.scale(g_loss).backward()
+                self.scaler.step(optims.generator)
+                self.scaler.step(optims.mapping_network)
+                self.scaler.step(optims.style_encoder)
+                self.scaler.update()
 
-            # compute moving average of network parameters
+                # Collect and display losses
+                all_losses = {}
+                for loss, prefix in zip([d_losses_latent, g_losses_latent], ['D/latent_', 'G/latent_']):
+                    for key, value in loss.items():
+                        all_losses[prefix + key] = value
+                all_losses['G/lambda_ds'] = args.lambda_ds
 
-            if args.ema:
-                moving_average(nets.generator, nets_ema.generator, beta=0.999)
-                moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
-                moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
+                pbar.set_postfix({k: f"{v:.4f}" for k, v in all_losses.items()})
+                pbar.update(1)
 
-            # decay weight for diversity sensitive loss
-            if args.lambda_ds > 0:
-                args.lambda_ds -= (initial_lambda_ds / args.ds_iter)
+                # EMA update and lambda decay
+                if args.ema:
+                    moving_average(nets.generator, nets_ema.generator, beta=0.999)
+                    moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
+                    moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
+                if args.lambda_ds > 0:
+                    args.lambda_ds -= (initial_lambda_ds / args.ds_epoch)
 
-            if (i+1) % args.wandb_log ==0:
-                # log losses to wandb
-                wandb.log(all_losses, step=i+1)
+            # Logging, saving, evaluating
+            if epoch % args.wandb_log == 0:
+                wandb.log(all_losses, step=epoch)
+            if epoch % args.save_every == 0:
+                self._save_checkpoint(step=epoch)
+            if epoch % args.eval_every == 0:
+                calculate_metrics(nets, args, epoch, mode='latent')
+                calculate_metrics(nets, args, epoch, mode='reference')
 
-            # generate sample images every 100 iterations
-            if (i+1) % 100 == 0:
-                os.makedirs(args.sample_dir, exist_ok=True)
-                utils.debug_image(nets_ema, args, inputs_val, step=i+1)
+            pbar.close()  # Close tqdm at the end of each epoch
 
-            # print out log info
-            # if (i+1) % args.print_every == 0:
-            #     elapsed = time.time() - start_time
-            #     elapsed = str(datetime.timedelta(seconds=elapsed))[:-7]
-            #     log = "Elapsed time [%s], Iteration [%i/%i], " % (elapsed, i+1, args.total_iters)
-            #     log += ' '.join(['%s: [%.4f]' % (key, value) for key, value in all_losses.items()])
-            #     print(log)
-            #     log losses to wandb
-            #     wandb.log(all_losses, step=i+1)
-
-            # generate images for debugging
-            # if (i+1) % args.sample_every == 0:
-            #     os.makedirs(args.sample_dir, exist_ok=True)
-            #     utils.debug_image(nets_ema, args, inputs=inputs_val, step=i+1)
-
-            # save model checkpoints
-            if (i+1) % args.save_every == 0:
-                self._save_checkpoint(step=i+1)
-
-            # compute FID and LPIPS if necessary
-            if (i+1) % args.eval_every == 0:
-                calculate_metrics(nets, args, i+1, mode='latent')
-                calculate_metrics(nets, args, i+1, mode='reference')
 
     @torch.no_grad()
     def sample(self, loaders):
         args = self.args
         nets_ema = self.nets
         os.makedirs(args.result_dir, exist_ok=True)
-        self._load_checkpoint(args.resume_iter)
+        self._load_checkpoint(args.resume_epoch)
 
         src = next(InputFetcher(loaders.src, None, args.latent_dim, 'test'))
         ref = next(InputFetcher(loaders.ref, None, args.latent_dim, 'test'))
@@ -236,10 +193,10 @@ class Solver(nn.Module):
     def evaluate(self):
         args = self.args
         nets = self.nets
-        resume_iter = args.resume_iter
-        self._load_checkpoint(args.resume_iter)
-        calculate_metrics(nets, args, step=resume_iter, mode='latent')
-        calculate_metrics(nets, args, step=resume_iter, mode='reference')
+        resume_epoch = args.resume_epoch
+        self._load_checkpoint(args.resume_epoch)
+        calculate_metrics(nets, args, step=resume_epoch, mode='latent')
+        calculate_metrics(nets, args, step=resume_epoch, mode='reference')
 
 
 def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, masks=None):

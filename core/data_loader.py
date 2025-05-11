@@ -49,16 +49,20 @@ class DefaultDataset(data.Dataset):
 
 
 class ReferenceDataset(data.Dataset):
-    def __init__(self, root, transform=None):
+    def __init__(self, root, transform=None, max_per_class=2000):
+        self.max_per_class = max_per_class
         self.samples, self.targets = self._make_dataset(root)
         self.transform = transform
 
     def _make_dataset(self, root):
         domains = os.listdir(root)
         fnames, fnames2, labels = [], [], []
+        max_per_class = self.max_per_class
         for idx, domain in enumerate(sorted(domains)):
             class_dir = os.path.join(root, domain)
             cls_fnames = listdir(class_dir)
+            if len(cls_fnames) > max_per_class:
+                cls_fnames = random.sample(cls_fnames, max_per_class)
             fnames += cls_fnames
             fnames2 += random.sample(cls_fnames, len(cls_fnames))
             labels += [idx] * len(cls_fnames)
@@ -86,7 +90,8 @@ def _make_balanced_sampler(labels):
 
 
 def get_train_loader(root, which='source', img_size=256,
-                     batch_size=8, prob=0.5, num_workers=4):
+                     batch_size=8, prob=0.5, num_workers=4,
+                     max_per_class=2000):
     print('Preparing DataLoader to fetch %s images '
           'during the training phase...' % which)
 
@@ -106,8 +111,20 @@ def get_train_loader(root, which='source', img_size=256,
 
     if which == 'source':
         dataset = ImageFolder(root, transform)
+        # limit to max images per class using max_per_class arg
+        from collections import defaultdict
+        class_imgs = defaultdict(list)
+        for path, label in dataset.samples:
+            class_imgs[label].append(path)
+        new_samples = []
+        for label, paths in class_imgs.items():
+            selected = paths if len(paths) <= max_per_class else random.sample(paths, max_per_class)
+            for p in selected:
+                new_samples.append((p, label))
+        dataset.samples = new_samples
+        dataset.targets = [label for _, label in new_samples]
     elif which == 'reference':
-        dataset = ReferenceDataset(root, transform)
+        dataset = ReferenceDataset(root, transform, max_per_class)
     else:
         raise NotImplementedError
 
