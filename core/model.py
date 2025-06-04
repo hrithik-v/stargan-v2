@@ -144,7 +144,8 @@ class Generator(nn.Module):
         self.to_rgb = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 3, 1, 1, 0))
+            nn.Conv2d(dim_in, 3, 1, 1, 0),
+            nn.Tanh())
 
         # down/up-sampling blocks
         repeat_num = int(np.log2(img_size)) - 4
@@ -285,17 +286,18 @@ def build_model(args):
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
     style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains))
     discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains))
-    generator_ema = copy.deepcopy(generator)
-    mapping_network_ema = copy.deepcopy(mapping_network)
-    style_encoder_ema = copy.deepcopy(style_encoder)
+    # generator_ema = copy.deepcopy(generator)
+    # mapping_network_ema = copy.deepcopy(mapping_network)
+    # style_encoder_ema = copy.deepcopy(style_encoder)
 
     nets = Munch(generator=generator,
                  mapping_network=mapping_network,
                  style_encoder=style_encoder,
                  discriminator=discriminator)
-    nets_ema = Munch(generator=generator_ema,
-                     mapping_network=mapping_network_ema,
-                     style_encoder=style_encoder_ema)
+    nets_ema = None
+    # nets_ema = Munch(generator=generator_ema,
+    #                  mapping_network=mapping_network_ema,
+    #                  style_encoder=style_encoder_ema)
 
     if args.w_hpf > 0:
         fan = nn.DataParallel(FAN(fname_pretrained=args.wing_path).eval())

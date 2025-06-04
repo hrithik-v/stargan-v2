@@ -31,7 +31,7 @@ def subdirs(dname):
 
 def main(args):
     print(args)
-    cudnn.benchmark = True
+    # cudnn.benchmark = True``
     torch.manual_seed(args.seed)
 
     solver = Solver(args)
@@ -44,13 +44,13 @@ def main(args):
                                              img_size=args.img_size,
                                              batch_size=args.batch_size,
                                              prob=args.randcrop_prob,
-                                             num_workers=args.num_workers),
+                                             num_workers=args.num_workers, max_per_class=args.max_per_class),
                         ref=get_train_loader(root=args.train_img_dir,
                                              which='reference',
                                              img_size=args.img_size,
                                              batch_size=args.batch_size,
                                              prob=args.randcrop_prob,
-                                             num_workers=args.num_workers),
+                                             num_workers=args.num_workers, max_per_class=args.max_per_class),
                         val=get_test_loader(root=args.val_img_dir,
                                             img_size=args.img_size,
                                             batch_size=args.val_batch_size,
@@ -86,7 +86,7 @@ if __name__ == '__main__':
     # model arguments
     parser.add_argument('--img_size', type=int, default=256,
                         help='Image resolution')
-    parser.add_argument('--num_domains', type=int, default=2,
+    parser.add_argument('--num_domains', type=int, default=5,
                         help='Number of domains')
     parser.add_argument('--latent_dim', type=int, default=16,
                         help='Latent vector dimension')
@@ -98,7 +98,7 @@ if __name__ == '__main__':
     # weight for objective functions
     parser.add_argument('--lambda_reg', type=float, default=1,
                         help='Weight for R1 regularization')
-    parser.add_argument('--lambda_cyc', type=float, default=1,
+    parser.add_argument('--lambda_cyc', type=float, default=10,
                         help='Weight for cyclic consistency loss')
     parser.add_argument('--lambda_sty', type=float, default=1,
                         help='Weight for style reconstruction loss')
@@ -106,7 +106,7 @@ if __name__ == '__main__':
                         help='Weight for diversity sensitive loss')
     parser.add_argument('--ds_iter', type=int, default=100000,
                         help='Number of iterations to optimize diversity sensitive loss')
-    parser.add_argument('--w_hpf', type=float, default=1,
+    parser.add_argument('--w_hpf', type=float, default=0,
                         help='weight for high-pass filtering')
 
     # training arguments
@@ -116,7 +116,7 @@ if __name__ == '__main__':
                         help='Number of total iterations')
     parser.add_argument('--resume_iter', type=int, default=0,
                         help='Iterations to resume training/testing')
-    parser.add_argument('--batch_size', type=int, default=8,
+    parser.add_argument('--batch_size', type=int, default=24,
                         help='Batch size for training')
     parser.add_argument('--val_batch_size', type=int, default=32,
                         help='Batch size for validation')
@@ -130,7 +130,7 @@ if __name__ == '__main__':
                         help='Decay rate for 2nd moment of Adam')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='Weight decay for optimizer')
-    parser.add_argument('--num_outs_per_domain', type=int, default=10,
+    parser.add_argument('--num_outs_per_domain', type=int, default=1,
                         help='Number of generated images per domain during sampling')
 
     # misc
@@ -139,13 +139,13 @@ if __name__ == '__main__':
                         help='This argument is used in solver')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers used in DataLoader')
-    parser.add_argument('--seed', type=int, default=777,
+    parser.add_argument('--seed', type=int, default=42,
                         help='Seed for random number generator')
 
     # directory for training
-    parser.add_argument('--train_img_dir', type=str, default='data/celeba_hq/train',
+    parser.add_argument('--train_img_dir', type=str, default='/kaggle/input/five-weather-23k',
                         help='Directory containing training images')
-    parser.add_argument('--val_img_dir', type=str, default='data/celeba_hq/val',
+    parser.add_argument('--val_img_dir', type=str, default='/kaggle/input/five-weather-23k',
                         help='Directory containing validation images')
     parser.add_argument('--sample_dir', type=str, default='expr/samples',
                         help='Directory for saving generated images')
@@ -173,10 +173,15 @@ if __name__ == '__main__':
     parser.add_argument('--lm_path', type=str, default='expr/checkpoints/celeba_lm_mean.npz')
 
     # step size
-    parser.add_argument('--print_every', type=int, default=10)
-    parser.add_argument('--sample_every', type=int, default=5000)
-    parser.add_argument('--save_every', type=int, default=10000)
-    parser.add_argument('--eval_every', type=int, default=50000)
+    parser.add_argument('--print_every', type=int, default=500)
+    parser.add_argument('--sample_every', type=int, default=99999)
+    parser.add_argument('--save_every', type=int, default=2500)
+    parser.add_argument('--eval_every', type=int, default=99999)
+
+    parser.add_argument('--max_per_class', type=int, default=2200)
+    parser.add_argument('--wandb_api_token', type=str, default=None)
+    parser.add_argument('--lambda_alpha', type=float, default=1.0)
+    parser.add_argument('--lambda_beta', type=float, default=0.5)
 
     args = parser.parse_args()
     main(args)

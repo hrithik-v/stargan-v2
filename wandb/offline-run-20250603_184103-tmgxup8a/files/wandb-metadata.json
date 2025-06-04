@@ -1,0 +1,36 @@
+{
+  "os": "Linux-6.6.56+-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.11",
+  "startedAt": "2025-06-03T18:41:03.913864Z",
+  "args": [
+    "--mode",
+    "train",
+    "--batch_size",
+    "1"
+  ],
+  "program": "/kaggle/working/stargan-v2/main.py",
+  "codePath": "main.py",
+  "git": {
+    "remote": "https://github.com/clovaai/stargan-v2.git",
+    "commit": "875b70a150609e8a678ed8482562e7074cdce7e5"
+  },
+  "root": "/kaggle/working/stargan-v2",
+  "host": "8cd6f5f5b086",
+  "executable": "/usr/bin/python3",
+  "codePathLocal": "main.py",
+  "cpu_count": 2,
+  "cpu_count_logical": 4,
+  "disk": {
+    "/": {
+      "total": "8656922775552",
+      "used": "6831966429184"
+    }
+  },
+  "memory": {
+    "total": "33662353408"
+  },
+  "cpu": {
+    "count": 2,
+    "countLogical": 4
+  }
+}

@@ -86,7 +86,7 @@ def _make_balanced_sampler(labels):
 
 
 def get_train_loader(root, which='source', img_size=256,
-                     batch_size=8, prob=0.5, num_workers=4):
+                     batch_size=8, prob=0.5, num_workers=4, max_per_class=2200):
     print('Preparing DataLoader to fetch %s images '
           'during the training phase...' % which)
 
@@ -105,7 +105,24 @@ def get_train_loader(root, which='source', img_size=256,
     ])
 
     if which == 'source':
-        dataset = ImageFolder(root, transform)
+        # Subsample ImageFolder to max_per_class images per class
+        dataset_full = ImageFolder(root, transform)
+        targets = dataset_full.targets
+        samples = dataset_full.samples
+        class_indices = {}
+        for idx, label in enumerate(targets):
+            class_indices.setdefault(label, []).append(idx)
+        selected_indices = []
+        for idxs in class_indices.values():
+            if len(idxs) > max_per_class:
+                idxs = random.sample(idxs, max_per_class)
+            selected_indices.extend(idxs)
+        # Shuffle to avoid class order bias
+        random.shuffle(selected_indices)
+        dataset_full.samples = [samples[i] for i in selected_indices]
+        dataset_full.targets = [targets[i] for i in selected_indices]
+        dataset = dataset_full
+        print("Length of dataset:", len(dataset))
     elif which == 'reference':
         dataset = ReferenceDataset(root, transform)
     else:

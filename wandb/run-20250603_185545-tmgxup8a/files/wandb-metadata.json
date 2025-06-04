@@ -1,0 +1,64 @@
+{
+  "os": "Linux-6.6.56+-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.11",
+  "startedAt": "2025-06-03T18:55:45.688389Z",
+  "args": [
+    "--mode",
+    "train",
+    "--wandb_api_token",
+    "8285c1e86ba66976957cd9bdbae9e646b37bba8f",
+    "--print_every",
+    "80",
+    "--total_iters",
+    "25000",
+    "--resume_iter",
+    "16000",
+    "--save_every",
+    "1000",
+    "--batch_size",
+    "24"
+  ],
+  "program": "/kaggle/working/stargan-v2/main.py",
+  "codePath": "main.py",
+  "git": {
+    "remote": "https://github.com/clovaai/stargan-v2.git",
+    "commit": "875b70a150609e8a678ed8482562e7074cdce7e5"
+  },
+  "email": "hrithikverma_co22a4_48@dtu.ac.in",
+  "root": "/kaggle/working/stargan-v2",
+  "host": "04daf9756a25",
+  "executable": "/usr/bin/python3",
+  "codePathLocal": "main.py",
+  "cpu_count": 2,
+  "cpu_count_logical": 4,
+  "gpu": "Tesla T4",
+  "gpu_count": 2,
+  "disk": {
+    "/": {
+      "total": "8656922775552",
+      "used": "6831742468096"
+    }
+  },
+  "memory": {
+    "total": "33662353408"
+  },
+  "cpu": {
+    "count": 2,
+    "countLogical": 4
+  },
+  "gpu_nvidia": [
+    {
+      "name": "Tesla T4",
+      "memoryTotal": "16106127360",
+      "cudaCores": 2560,
+      "architecture": "Turing"
+    },
+    {
+      "name": "Tesla T4",
+      "memoryTotal": "16106127360",
+      "cudaCores": 2560,
+      "architecture": "Turing"
+    }
+  ],
+  "cudaVersion": "12.6"
+}

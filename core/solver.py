@@ -17,6 +17,9 @@ from munch import Munch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
+from pytorch_msssim import SSIM
+from torchvision.models import vgg16
 
 from core.model import build_model
 from core.checkpoint import CheckpointIO
@@ -31,13 +34,21 @@ class Solver(nn.Module):
         self.args = args
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        # Initialize wandb
+        wandb.login(key=args.wandb_api_token)
+        wandb.init(project="starganv2", name="ssim_perce_hinge",
+        # id="tmgxup8a", 
+        # resume="allow", 
+        config=vars(args)
+        )
+
         self.nets, self.nets_ema = build_model(args)
         # below setattrs are to make networks be children of Solver, e.g., for self.to(self.device)
         for name, module in self.nets.items():
             utils.print_network(module, name)
             setattr(self, name, module)
-        for name, module in self.nets_ema.items():
-            setattr(self, name + '_ema', module)
+        # for name, module in self.nets_ema.items():
+        #     setattr(self, name + '_ema', module)
 
         if args.mode == 'train':
             self.optims = Munch()
@@ -52,7 +63,7 @@ class Solver(nn.Module):
 
             self.ckptios = [
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **self.nets),
-                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
+                # CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
         else:
             self.ckptios = [CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema)]
@@ -79,7 +90,7 @@ class Solver(nn.Module):
     def train(self, loaders):
         args = self.args
         nets = self.nets
-        nets_ema = self.nets_ema
+        # nets_ema = self.nets_ema
         optims = self.optims
 
         # fetch random validation images for debugging
@@ -96,6 +107,9 @@ class Solver(nn.Module):
 
         print('Start training...')
         start_time = time.time()
+
+        scaler = torch.amp.GradScaler('cuda')  # for mixed precision
+
         for i in range(args.resume_iter, args.total_iters):
             # fetch images and labels
             inputs = next(fetcher)
@@ -106,37 +120,45 @@ class Solver(nn.Module):
             masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
             # train the discriminator
-            d_loss, d_losses_latent = compute_d_loss(
-                nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
+            with torch.amp.autocast('cuda'):
+                d_loss, d_losses_latent = compute_d_loss(
+                    nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
             self._reset_grad()
-            d_loss.backward()
-            optims.discriminator.step()
+            scaler.scale(d_loss).backward()
+            scaler.step(optims.discriminator)
+            scaler.update()
 
-            d_loss, d_losses_ref = compute_d_loss(
-                nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
+            with torch.amp.autocast('cuda'):
+                d_loss, d_losses_ref = compute_d_loss(
+                    nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
             self._reset_grad()
-            d_loss.backward()
-            optims.discriminator.step()
+            scaler.scale(d_loss).backward()
+            scaler.step(optims.discriminator)
+            scaler.update()
 
             # train the generator
-            g_loss, g_losses_latent = compute_g_loss(
-                nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
+            with torch.amp.autocast('cuda'):
+                g_loss, g_losses_latent = compute_g_loss(
+                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
             self._reset_grad()
-            g_loss.backward()
-            optims.generator.step()
-            optims.mapping_network.step()
-            optims.style_encoder.step()
+            scaler.scale(g_loss).backward()
+            scaler.step(optims.generator)
+            scaler.step(optims.mapping_network)
+            scaler.step(optims.style_encoder)
+            scaler.update()
 
-            g_loss, g_losses_ref = compute_g_loss(
-                nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
+            with torch.amp.autocast('cuda'):
+                g_loss, g_losses_ref = compute_g_loss(
+                    nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
             self._reset_grad()
-            g_loss.backward()
-            optims.generator.step()
+            scaler.scale(g_loss).backward()
+            scaler.step(optims.generator)
+            scaler.update()
 
             # compute moving average of network parameters
-            moving_average(nets.generator, nets_ema.generator, beta=0.999)
-            moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
-            moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
+            # moving_average(nets.generator, nets_ema.generator, beta=0.999)
+            # moving_average(nets.mapping_network, nets_ema.mapping_network, beta=0.999)
+            # moving_average(nets.style_encoder, nets_ema.style_encoder, beta=0.999)
 
             # decay weight for diversity sensitive loss
             if args.lambda_ds > 0:
@@ -155,6 +177,8 @@ class Solver(nn.Module):
                 all_losses['G/lambda_ds'] = args.lambda_ds
                 log += ' '.join(['%s: [%.4f]' % (key, value) for key, value in all_losses.items()])
                 print(log)
+                # Log metrics to wandb
+                wandb.log({**all_losses, 'iteration': i+1})
 
             # generate images for debugging
             if (i+1) % args.sample_every == 0:
@@ -173,7 +197,7 @@ class Solver(nn.Module):
     @torch.no_grad()
     def sample(self, loaders):
         args = self.args
-        nets_ema = self.nets_ema
+        nets_ema = self.nets
         os.makedirs(args.result_dir, exist_ok=True)
         self._load_checkpoint(args.resume_iter)
 
@@ -203,7 +227,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
     # with real images
     x_real.requires_grad_()
     out = nets.discriminator(x_real, y_org)
-    loss_real = adv_loss(out, 1)
+    loss_real = torch.mean(F.relu(1.0 - out))  # hinge loss for real
     loss_reg = r1_reg(out, x_real)
 
     # with fake images
@@ -215,7 +239,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
 
         x_fake = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
-    loss_fake = adv_loss(out, 0)
+    loss_fake = torch.mean(F.relu(1.0 + out))  # hinge loss for fake
 
     loss = loss_real + loss_fake + args.lambda_reg * loss_reg
     return loss, Munch(real=loss_real.item(),
@@ -238,7 +262,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
 
     x_fake = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
-    loss_adv = adv_loss(out, 1)
+    loss_adv = -torch.mean(out)  # hinge loss generator
 
     # style reconstruction loss
     s_pred = nets.style_encoder(x_fake, y_trg)
@@ -257,7 +281,18 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     masks = nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
     x_rec = nets.generator(x_fake, s_org, masks=masks)
-    loss_cyc = torch.mean(torch.abs(x_rec - x_real))
+    # cycle-consistency loss combining SSIM and perceptual loss
+    # SSIM-based term
+
+    # print("x_real.min(), x_real.max():", x_real.min(), x_real.max())
+    # print("x_rec.min(), x_rec.max():", x_rec.min(), x_rec.max())
+    ssim_module = SSIM(data_range=1.0, size_average=True, channel=x_real.size(1)).to(x_real.device)
+    ssim_val = ssim_module((x_real + 1) / 2, (x_rec + 1) / 2)
+    loss_ssim = 1 - ssim_val
+    # perceptual term
+    percep = VGGPerceptualLoss(x_real.device)
+    loss_per = percep(x_rec, x_real)
+    loss_cyc = args.lambda_alpha * loss_ssim + args.lambda_beta * loss_per
 
     loss = loss_adv + args.lambda_sty * loss_sty \
         - args.lambda_ds * loss_ds + args.lambda_cyc * loss_cyc
@@ -272,11 +307,11 @@ def moving_average(model, model_test, beta=0.999):
         param_test.data = torch.lerp(param.data, param_test.data, beta)
 
 
-def adv_loss(logits, target):
-    assert target in [1, 0]
-    targets = torch.full_like(logits, fill_value=target)
-    loss = F.binary_cross_entropy_with_logits(logits, targets)
-    return loss
+# def adv_loss(logits, target):
+#     assert target in [1, 0]
+#     targets = torch.full_like(logits, fill_value=target)
+#     loss = F.binary_cross_entropy_with_logits(logits, targets)
+#     return loss
 
 
 def r1_reg(d_out, x_in):
@@ -290,3 +325,35 @@ def r1_reg(d_out, x_in):
     assert(grad_dout2.size() == x_in.size())
     reg = 0.5 * grad_dout2.view(batch_size, -1).sum(1).mean(0)
     return reg
+
+
+# Add VGGPerceptualLoss implementation for perceptual loss
+class VGGPerceptualLoss(nn.Module):
+    def __init__(self, device, layers=[3,8,15,22]):
+        super().__init__()
+        self.device = device
+        self.selected = set(layers)
+        all_layers = list(vgg16(pretrained=True).features)
+        devices = ([torch.device('cuda:0'), torch.device(f'cuda:{list(range(torch.cuda.device_count()))[1]}')] \
+                    if torch.cuda.device_count()>1 else [device, device])
+        self.layers = nn.ModuleList()
+        for idx, layer in enumerate(all_layers):
+            dev = devices[idx % len(devices)]
+            layer.to(dev).eval()
+            for p in layer.parameters(): p.requires_grad = False
+            self.layers.append(layer)
+        self.devices = devices
+
+    def forward(self, gen, real):
+        xg = (gen + 1) / 2
+        xr = (real + 1) / 2
+        feats_g, feats_r = [], []
+        for idx, layer in enumerate(self.layers):
+            dev = self.devices[idx % len(self.devices)]
+            xg = layer(xg.to(dev))
+            xr = layer(xr.to(dev))
+            if idx in self.selected:
+                feats_g.append(xg.to(self.device))
+                feats_r.append(xr.to(self.device))
+        loss = sum(F.l1_loss(g, r) for g, r in zip(feats_g, feats_r))
+        return loss
