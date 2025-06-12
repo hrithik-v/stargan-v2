@@ -94,6 +94,9 @@ if __name__ == '__main__':
                         help='Hidden dimension of mapping network')
     parser.add_argument('--style_dim', type=int, default=64,
                         help='Style code dimension')
+    parser.add_argument('--max_conv_dim', type=int, default=512,
+                        help='Maximum number of convolutional filters in generator and discriminator')
+
 
     # weight for objective functions
     parser.add_argument('--lambda_reg', type=float, default=1,
@@ -178,10 +181,16 @@ if __name__ == '__main__':
     parser.add_argument('--save_every', type=int, default=2500)
     parser.add_argument('--eval_every', type=int, default=99999)
 
-    parser.add_argument('--max_per_class', type=int, default=2200)
+    # wandb
     parser.add_argument('--wandb_api_token', type=str, default=None)
+    parser.add_argument('--wandb_name', type=str, required=True)
+    parser.add_argument('--wandb_id', type=str, default=None)
+    parser.add_argument('--wandb_resume', type=bool, default=False)
+    
+
+    parser.add_argument('--max_per_class', type=int, default=2200)
     parser.add_argument('--lambda_alpha', type=float, default=1.0)
-    parser.add_argument('--lambda_beta', type=float, default=0.5)
+    parser.add_argument('--lambda_beta', type=float, default=1.0)
 
     args = parser.parse_args()
     main(args)

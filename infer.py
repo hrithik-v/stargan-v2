@@ -17,17 +17,22 @@ IMG_SIZE = 256
 NUM_DOMAINS = 5
 LATENT_DIM = 16
 STYLE_DIM = 64
-MAX_CONV_DIM = 64
-CHECKPOINT_PATH = 'expr/checkpoints/02000_nets.ckpt'  # Update this path
-SRC_DIR = '/kaggle/input/five-weather-23k'              # Update this path
-OUT_PATH = 'samples/ssim_perce_hinge.png'
+MAX_CONV_DIM = 512
+HIDDEN_DIM = 512
+
+EXPR_NAME = 'perce_base' 
+CKPT_NO = '006300' 
+
+CHECKPOINT_PATH = f'expr/checkpoints/{EXPR_NAME}/{CKPT_NO}_nets.ckpt'
+OUT_PATH = f'samples/{EXPR_NAME}/{CKPT_NO}.png'
+SRC_DIR = '/kaggle/input/five-weather-23k'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SEED = 42
 
 # --------- SETUP ---------
-torch.manual_seed(SEED)
-random.seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+# torch.manual_seed(SEED)
+# random.seed(SEED)
+# torch.cuda.manual_seed_all(SEED)
 
 transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
@@ -45,7 +50,7 @@ class Args:
     w_hpf = 0
     ema = False
     wing_path = ''
-    hidden_dim = 128
+    hidden_dim = HIDDEN_DIM
 args = Args()
 
 nets, _ = build_model(args)

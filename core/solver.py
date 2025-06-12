@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from pytorch_msssim import SSIM
+# from pytorch_msssim import SSIM
 from torchvision.models import vgg16
 
 from core.model import build_model
@@ -36,9 +36,9 @@ class Solver(nn.Module):
 
         # Initialize wandb
         wandb.login(key=args.wandb_api_token)
-        wandb.init(project="starganv2", name="ssim_perce_hinge",
-        # id="tmgxup8a", 
-        # resume="allow", 
+        wandb.init(project="starganv2", name=args.wandb_name,
+        id=args.wandb_id, 
+        resume= "allow" if args.wandb_resume else None, 
         config=vars(args)
         )
 
@@ -69,6 +69,15 @@ class Solver(nn.Module):
             self.ckptios = [CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema)]
 
         self.to(self.device)
+        
+        if args.lambda_beta > 0:
+            # Initialize a single VGGPerceptualLoss instance for perceptual loss
+            self.percep = VGGPerceptualLoss(self.device)
+            # Ensure no gradients are computed for perceptual network
+            for p in self.percep.parameters(): p.requires_grad = False
+            # Expose in nets for compute_g_loss lookup
+            self.nets['percep'] = self.percep
+            
         for name, network in self.named_children():
             # Do not initialize the FAN parameters
             if ('ema' not in name) and ('fan' not in name):
@@ -165,6 +174,8 @@ class Solver(nn.Module):
                 args.lambda_ds -= (initial_lambda_ds / args.ds_iter)
 
             # print out log info
+            print('\rIteration [%i/%i]' % (i+1, args.total_iters), end='')
+
             if (i+1) % args.print_every == 0:
                 elapsed = time.time() - start_time
                 elapsed = str(datetime.timedelta(seconds=elapsed))[:-7]
@@ -188,6 +199,13 @@ class Solver(nn.Module):
             # save model checkpoints
             if (i+1) % args.save_every == 0:
                 self._save_checkpoint(step=i+1)
+
+            # Save latest checkpoints every 100 iterations
+            if (i+1) % 100 == 0:
+                latest_ckpt_nets = CheckpointIO(ospj(args.checkpoint_dir, 'latest_nets.ckpt'), data_parallel=True, **self.nets)
+                latest_ckpt_optims = CheckpointIO(ospj(args.checkpoint_dir, 'latest_optims.ckpt'), **self.optims)
+                latest_ckpt_nets.save(step=i+1)
+                latest_ckpt_optims.save(step=i+1)
 
             # compute FID and LPIPS if necessary
             if (i+1) % args.eval_every == 0:
@@ -227,7 +245,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
     # with real images
     x_real.requires_grad_()
     out = nets.discriminator(x_real, y_org)
-    loss_real = torch.mean(F.relu(1.0 - out))  # hinge loss for real
+    loss_real = adv_loss(out, 1)
     loss_reg = r1_reg(out, x_real)
 
     # with fake images
@@ -239,7 +257,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
 
         x_fake = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
-    loss_fake = torch.mean(F.relu(1.0 + out))  # hinge loss for fake
+    loss_fake = adv_loss(out, 0)
 
     loss = loss_real + loss_fake + args.lambda_reg * loss_reg
     return loss, Munch(real=loss_real.item(),
@@ -262,7 +280,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
 
     x_fake = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
-    loss_adv = -torch.mean(out)  # hinge loss generator
+    loss_adv = adv_loss(out, 1)
 
     # style reconstruction loss
     s_pred = nets.style_encoder(x_fake, y_trg)
@@ -281,21 +299,12 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     masks = nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
     x_rec = nets.generator(x_fake, s_org, masks=masks)
-    # cycle-consistency loss combining SSIM and perceptual loss
-    # SSIM-based term
-
-    # print("x_real.min(), x_real.max():", x_real.min(), x_real.max())
-    # print("x_rec.min(), x_rec.max():", x_rec.min(), x_rec.max())
-    ssim_module = SSIM(data_range=1.0, size_average=True, channel=x_real.size(1)).to(x_real.device)
-    ssim_val = ssim_module((x_real + 1) / 2, (x_rec + 1) / 2)
-    loss_ssim = 1 - ssim_val
-    # perceptual term
-    percep = VGGPerceptualLoss(x_real.device)
-    loss_per = percep(x_rec, x_real)
-    loss_cyc = args.lambda_alpha * loss_ssim + args.lambda_beta * loss_per
+    
+    loss_per = nets.percep(x_rec, x_real) if args.lambda_beta>0 else None
+    loss_cyc = torch.mean(torch.abs(x_rec - x_real))
 
     loss = loss_adv + args.lambda_sty * loss_sty \
-        - args.lambda_ds * loss_ds + args.lambda_cyc * loss_cyc
+        - args.lambda_ds * loss_ds + args.lambda_cyc * loss_cyc + args.lambda_beta * loss_per
     return loss, Munch(adv=loss_adv.item(),
                        sty=loss_sty.item(),
                        ds=loss_ds.item(),
@@ -307,11 +316,11 @@ def moving_average(model, model_test, beta=0.999):
         param_test.data = torch.lerp(param.data, param_test.data, beta)
 
 
-# def adv_loss(logits, target):
-#     assert target in [1, 0]
-#     targets = torch.full_like(logits, fill_value=target)
-#     loss = F.binary_cross_entropy_with_logits(logits, targets)
-#     return loss
+def adv_loss(logits, target):
+    assert target in [1, 0]
+    targets = torch.full_like(logits, fill_value=target)
+    loss = F.binary_cross_entropy_with_logits(logits, targets)
+    return loss
 
 
 def r1_reg(d_out, x_in):
@@ -319,8 +328,8 @@ def r1_reg(d_out, x_in):
     batch_size = x_in.size(0)
     grad_dout = torch.autograd.grad(
         outputs=d_out.sum(), inputs=x_in,
-        create_graph=True, retain_graph=True, only_inputs=True
-    )[0]
+        create_graph=True, retain_graph=True, only_inputs=True)[0]
+    
     grad_dout2 = grad_dout.pow(2)
     assert(grad_dout2.size() == x_in.size())
     reg = 0.5 * grad_dout2.view(batch_size, -1).sum(1).mean(0)
@@ -329,20 +338,33 @@ def r1_reg(d_out, x_in):
 
 # Add VGGPerceptualLoss implementation for perceptual loss
 class VGGPerceptualLoss(nn.Module):
-    def __init__(self, device, layers=[3,8,15,22]):
+    def __init__(self, device, layers=[20]):
         super().__init__()
         self.device = device
         self.selected = set(layers)
-        all_layers = list(vgg16(pretrained=True).features)
-        devices = ([torch.device('cuda:0'), torch.device(f'cuda:{list(range(torch.cuda.device_count()))[1]}')] \
-                    if torch.cuda.device_count()>1 else [device, device])
+        # Only load up to the highest required layer to save GPU memory
+        vgg_full = vgg16(pretrained=True)
+        max_idx = max(self.selected)
+        all_layers = list(vgg_full.features[: max_idx + 1])
+        # free the rest of the model
+        del vgg_full
+        # split layers into two contiguous parts for two-GPU assignment
+        if torch.cuda.device_count() > 1:
+            dev1 = torch.device('cuda:0')
+            dev0 = torch.device('cuda:1')
+        else:
+            dev0 = device
+            dev1 = device
+        split_idx = len(all_layers) // 2
         self.layers = nn.ModuleList()
+        self.devices = []
         for idx, layer in enumerate(all_layers):
-            dev = devices[idx % len(devices)]
+            # first half to dev0, second half to dev1
+            dev = dev0 if idx < split_idx else dev1
             layer.to(dev).eval()
             for p in layer.parameters(): p.requires_grad = False
             self.layers.append(layer)
-        self.devices = devices
+            self.devices.append(dev)
 
     def forward(self, gen, real):
         xg = (gen + 1) / 2

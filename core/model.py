@@ -97,7 +97,7 @@ class AdainResBlk(nn.Module):
 
     def _shortcut(self, x):
         if self.upsample:
-            x = F.interpolate(x, scale_factor=2, mode='nearest')
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
         if self.learned_sc:
             x = self.conv1x1(x)
         return x
@@ -106,7 +106,7 @@ class AdainResBlk(nn.Module):
         x = self.norm1(x, s)
         x = self.actv(x)
         if self.upsample:
-            x = F.interpolate(x, scale_factor=2, mode='nearest')
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
         x = self.conv1(x)
         x = self.norm2(x, s)
         x = self.actv(x)
@@ -144,8 +144,7 @@ class Generator(nn.Module):
         self.to_rgb = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 3, 1, 1, 0),
-            nn.Tanh())
+            nn.Conv2d(dim_in, 3, 1, 1, 0))
 
         # down/up-sampling blocks
         repeat_num = int(np.log2(img_size)) - 4
@@ -282,10 +281,10 @@ class Discriminator(nn.Module):
 
 
 def build_model(args):
-    generator = nn.DataParallel(Generator(args.img_size, args.style_dim, w_hpf=args.w_hpf))
+    generator = nn.DataParallel(Generator(args.img_size, args.style_dim, args.max_conv_dim, args.w_hpf))
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
-    style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains))
-    discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains))
+    style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains, args.max_conv_dim))
+    discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains, args.max_conv_dim))
     # generator_ema = copy.deepcopy(generator)
     # mapping_network_ema = copy.deepcopy(mapping_network)
     # style_encoder_ema = copy.deepcopy(style_encoder)
