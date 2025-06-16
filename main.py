@@ -96,21 +96,44 @@ if __name__ == '__main__':
                         help='Style code dimension')
     parser.add_argument('--max_conv_dim', type=int, default=512,
                         help='Maximum number of convolutional filters in generator and discriminator')
+    # Add num_seg_classes for WeatherGAN S_seg branch
+    parser.add_argument('--num_seg_classes', type=int, default=5, # Default to 5 as per WeatherGAN paper (clear, overcast, rain, snow, fog)
+                        help='Number of segmentation classes for S_seg branch')
 
 
     # weight for objective functions
     parser.add_argument('--lambda_reg', type=float, default=1,
                         help='Weight for R1 regularization')
-    parser.add_argument('--lambda_cyc', type=float, default=10,
-                        help='Weight for cyclic consistency loss')
-    parser.add_argument('--lambda_sty', type=float, default=1,
-                        help='Weight for style reconstruction loss')
-    parser.add_argument('--lambda_ds', type=float, default=1,
-                        help='Weight for diversity sensitive loss')
-    parser.add_argument('--ds_iter', type=int, default=100000,
-                        help='Number of iterations to optimize diversity sensitive loss')
-    parser.add_argument('--w_hpf', type=float, default=0,
+    # WeatherGAN lambda_cyc for Lcyc = (1-SSIM) + VGG. Original StarGANv2 lambda_cyc was for L1.
+    parser.add_argument('--lambda_cyc', type=float, default=1.0, # WeatherGAN paper: 1.0
+                        help='Weight for cycle structural perceptual consistency loss (Lcyc)')
+    # lambda_sty in StarGANv2 maps to lambda_inv in WeatherGAN (weather-invariant consistency loss)
+    parser.add_argument('--lambda_inv', type=float, default=1.0, # WeatherGAN paper: 1.0
+                        help='Weight for weather-invariant consistency loss (Linv)')
+    # lambda_ds in StarGANv2 maps to lambda_wd in WeatherGAN (weather diversity loss)
+    # WeatherGAN uses -lambda_wd * Lwd. StarGANv2 uses -lambda_ds * Lds.
+    parser.add_argument('--lambda_wd', type=float, default=-1.0, # WeatherGAN paper: -1.0 (for maximization)
+                        help='Weight for weather diversity loss (Lwd)')
+    # parser.add_argument('--ds_iter', type=int, default=100000, # Kept from StarGANv2, for decaying lambda_wd if needed.
+    #                     help='Number of iterations to optimize diversity sensitive loss') # Not mentioned in WeatherGAN
+    parser.add_argument('--w_hpf', type=float, default=0, # WeatherGAN does not mention HPF, setting to 0.
                         help='weight for high-pass filtering')
+    # New lambda for WeatherGAN's Lseg
+    parser.add_argument('--lambda_seg', type=float, default=1.0, # WeatherGAN paper: 1.0
+                        help='Weight for weakly supervised multitask weather-cue objective (Lseg = Lc + Ls)')
+    # New lambda for WeatherGAN's Lwrc
+    parser.add_argument('--lambda_wrc', type=float, default=1.0, # WeatherGAN paper: 1.0
+                        help='Weight for weather-irrelevant content reconstruction loss (Lwrc)')
+    
+    # Adversarial loss weight (typically 1, but can be tuned)
+    parser.add_argument('--lambda_adv', type=float, default=1.0,
+                        help='Weight for adversarial loss')
+
+
+    # Remove StarGANv2 specific lambdas if they are replaced or not used
+    # parser.add_argument('--lambda_sty', type=float, default=1, help='Weight for style reconstruction loss') # Replaced by lambda_inv
+    # parser.add_argument('--lambda_ds', type=float, default=1, help='Weight for diversity sensitive loss') # Replaced by lambda_wd
+    # parser.add_argument('--lambda_wing', type=float, default=0, help='Weight for wing loss (face landmarks)') # Not in WeatherGAN
 
     # training arguments
     parser.add_argument('--randcrop_prob', type=float, default=0.5,
@@ -189,8 +212,8 @@ if __name__ == '__main__':
     
 
     parser.add_argument('--max_per_class', type=int, default=2200)
-    parser.add_argument('--lambda_alpha', type=float, default=1.0)
-    parser.add_argument('--lambda_beta', type=float, default=1.0)
+    # parser.add_argument('--lambda_alpha', type=float, default=1.0) # Not in WeatherGAN
+    # parser.add_argument('--lambda_beta', type=float, default=1.0) # Potentially superseded by Lcyc and Linv structure
 
     args = parser.parse_args()
     main(args)
