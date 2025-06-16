@@ -151,47 +151,56 @@ class HighPass(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, img_size=256, style_dim=64, max_conv_dim=512, w_hpf=1):
+    def __init__(self, img_size=256, style_dim=64, max_conv_dim=512, w_hpf=1, num_domains=5):
         super().__init__()
         dim_in = 2**14 // img_size
         self.img_size = img_size
+        self.num_domains = num_domains  # number of weather classes
+
         # Shared encoder
         self.from_rgb = nn.Conv2d(3, dim_in, 3, 1, 1)
         self.encode = nn.ModuleList()
+        # Classification head (weather-type logits)
+        self.to_cls = nn.Linear(dim_in, num_domains)
+        # global pooling for classification
+        self.class_pool = nn.AdaptiveAvgPool2d(1)
         # Decode blocks for clues and global branches
         self.decode_clues = nn.ModuleList()
         self.decode_glo = nn.ModuleList()
-        # Segmentation head
-        self.to_seg = nn.Sequential(nn.Conv2d(dim_in, 1, 1), nn.Sigmoid())
+        # Segmentation head: per-pixel multi-class logits for each weather type
+        self.to_seg = nn.Conv2d(dim_in, self.num_domains, 1)
+
         # Weather clues head
-        self.to_clues = nn.Sequential(nn.InstanceNorm2d(dim_in, affine=True),
-                                     nn.LeakyReLU(0.2),
-                                     nn.Conv2d(dim_in, 1, 1),
-                                     nn.Sigmoid())
+        self.to_clues = nn.Sequential(
+            nn.InstanceNorm2d(dim_in, affine=True),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(dim_in, 1, 1),
+            nn.Sigmoid()
+        )
+
         # Global translation head
-        self.to_glo = nn.Sequential(nn.InstanceNorm2d(dim_in, affine=True),
-                                    nn.LeakyReLU(0.2),
-                                    nn.Conv2d(dim_in, 3, 1, 1, 0))
+        self.to_glo = nn.Sequential(
+            nn.InstanceNorm2d(dim_in, affine=True),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(dim_in, 3, 1, 1, 0)
+        )
 
         # down/up-sampling blocks
         repeat_num = int(np.log2(img_size)) - 4
         if w_hpf > 0:
             repeat_num += 1
         for _ in range(repeat_num):
-            dim_out = min(dim_in*2, max_conv_dim)
+            dim_out = min(dim_in * 2, max_conv_dim)
             self.encode.append(
                 ResBlk(dim_in, dim_out, normalize=True, downsample=True))
             # shared decode for clues and glo
-            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_in, style_dim,
-                                 w_hpf=w_hpf, upsample=True))
-            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_in, style_dim,
-                                 w_hpf=w_hpf, upsample=True))
+            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_in, style_dim, w_hpf=w_hpf, upsample=True))
+            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_in, style_dim, w_hpf=w_hpf, upsample=True))
             dim_in = dim_out
 
         # bottleneck blocks
         for _ in range(2):
-            self.encode.append(
-                ResBlk(dim_out, dim_out, normalize=True))
+            self.encode.append(ResBlk(dim_out, dim_out, normalize=True))
             self.decode_clues.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
             self.decode_glo.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
 
@@ -204,21 +213,29 @@ class Generator(nn.Module):
         feat = self.from_rgb(x)
         for block in self.encode:
             feat = block(feat)
-        # Segmentation map
-        seg = self.to_seg(feat)
+        # Weather classification logits from Sseg
+        cls_feat = self.class_pool(feat).view(feat.size(0), -1)
+        logits = self.to_cls(cls_feat)
+        # Segmentation logits for multi-class weather-cue
+        seg_logits = self.to_seg(feat)
+        seg = F.softmax(seg_logits, dim=1)
+
         # Weather clues branch
         clues_feat = feat
         for block in self.decode_clues:
             clues_feat = block(clues_feat, s)
         clues = self.to_clues(clues_feat)
+
         # Global translation branch
         glo_feat = feat
         for block in self.decode_glo:
             glo_feat = block(glo_feat, s)
         glo = self.to_glo(glo_feat)
+
         # Combine according to Eq. (1)
         out = clues * glo + (1 - clues) * x
-        return out, seg
+
+        return out, seg_logits, logits
 
 
 class MappingNetwork(nn.Module):
@@ -326,7 +343,7 @@ class Discriminator(nn.Module):
 
 
 def build_model(args):
-    generator = nn.DataParallel(Generator(args.img_size, args.style_dim, args.max_conv_dim, args.w_hpf))
+    generator = nn.DataParallel(Generator(args.img_size, args.style_dim, args.max_conv_dim, args.w_hpf, args.num_domains))
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
     style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains, args.max_conv_dim))
     discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains, args.max_conv_dim))

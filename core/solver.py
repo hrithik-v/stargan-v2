@@ -278,7 +278,8 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
         else:  # x_ref is not None
             s_trg = nets.style_encoder(x_ref, y_trg)
 
-        x_fake, _seg = nets.generator(x_real, s_trg, masks=masks)
+        x_fake, _seg, _cls = nets.generator(x_real, s_trg, masks=masks)
+
     out = nets.discriminator(x_fake, y_trg)
     loss_fake = adv_loss(out, 0)
 
@@ -286,6 +287,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
     return loss, Munch(real=loss_real.item(),
                        fake=loss_fake.item(),
                        reg=loss_reg.item())
+
 
 
 def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, masks=None, seg_gt=None):
@@ -301,8 +303,8 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     else:
         s_trg = nets.style_encoder(x_ref, y_trg)
 
-    # forward generator: get fake image and seg prediction
-    x_fake, seg_pred = nets.generator(x_real, s_trg, masks=masks)
+    # forward generator
+    x_fake, seg_pred, cls_logits = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
     loss_adv = adv_loss(out, 1)
 
@@ -315,21 +317,33 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
         s_trg2 = nets.mapping_network(z_trg2, y_trg)
     else:
         s_trg2 = nets.style_encoder(x_ref2, y_trg)
-    x_fake2, _seg2 = nets.generator(x_real, s_trg2, masks=masks)
+    x_fake2, _seg2, _cls2 = nets.generator(x_real, s_trg2, masks=masks)
     x_fake2 = x_fake2.detach()
     loss_ds = torch.mean(torch.abs(x_fake - x_fake2))
 
-    # cycle-consistency structural perceptual loss
+    # cycle structural perceptual consistency (Eq.7): SSIM + perceptual VGG loss
     masks = nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
-    x_rec, _seg_rec = nets
+    x_rec, _seg_rec, _cls_rec = nets.generator(x_fake, s_org, masks=masks)
+    # SSIM term between x and reconstructed image
+    loss_cyc_ssim = 1 - nets.ssim(x_real, x_rec)
+    # perceptual VGG term
+    loss_cyc_per = nets.percep(x_rec, x_real) if args.lambda_beta > 0 else 0
+    # total cycle loss
+    loss_cyc = loss_cyc_ssim + loss_cyc_per
+
     # weather-invariant consistency loss
     loss_inv_ssim = 1 - nets.ssim(x_real, x_fake)
     loss_inv_per = nets.percep(x_fake, x_real) if args.lambda_beta > 0 else 0
     loss_inv = loss_inv_ssim + loss_inv_per
-    # segmentation loss
+
+    # segmentation and classification losses
+    # weakly-supervised segmentation & classification losses (Eq.5)
     if seg_gt is not None and args.lambda_seg > 0:
-        loss_seg = F.binary_cross_entropy(seg_pred, seg_gt)
+        # multi-class segmentation: seg_pred is raw logits (N, num_domains, H, W), seg_gt has shape (N, H, W)
+        loss_s = F.cross_entropy(seg_pred, seg_gt)
+        loss_c = F.cross_entropy(cls_logits, y_trg)
+        loss_seg = loss_s + loss_c
     else:
         loss_seg = 0
 
@@ -340,14 +354,16 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
         + args.lambda_cyc * loss_cyc \
         + args.lambda_inv * loss_inv \
         + args.lambda_seg * loss_seg
+
     return loss, Munch(
-        adv=loss_adv.item(),
-        sty=loss_sty.item(),
-        ds=loss_ds.item(),
-        cyc=loss_cyc.item(),
-        inv=loss_inv.item() if isinstance(loss_inv, torch.Tensor) else 0,
-        seg=loss_seg.item() if isinstance(loss_seg, torch.Tensor) else 0
-    )
+         adv=loss_adv.item(),
+         sty=loss_sty.item(),
+         ds=loss_ds.item(),
+         cyc=loss_cyc.item(),
+         inv=loss_inv.item(),
+         seg=loss_seg.item(),
+         cls=loss_c.item()
+     )
 
 
 def moving_average(model, model_test, beta=0.999):
