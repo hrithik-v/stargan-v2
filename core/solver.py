@@ -17,15 +17,32 @@ from munch import Munch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
-# from pytorch_msssim import SSIM
-from torchvision.models import vgg16
+import wandb  # We use wandb for logging
+from torchvision.models import vgg16  # for perceptual loss
 
 from core.model import build_model
 from core.checkpoint import CheckpointIO
 from core.data_loader import InputFetcher
 import core.utils as utils
 from metrics.eval import calculate_metrics
+
+
+# inline SSIM implementation for structural consistency losses
+def ssim(img1, img2, window_size=3, size_average=True):
+    """Compute structural similarity index between img1 and img2."""
+    # constants
+    C1 = 0.01 ** 2
+    C2 = 0.03 ** 2
+    # mean
+    mu1 = F.avg_pool2d(img1, window_size, 1, window_size//2)
+    mu2 = F.avg_pool2d(img2, window_size, 1, window_size//2)
+    # variances and covariance
+    sigma1_sq = F.avg_pool2d(img1 * img1, window_size, 1, window_size//2) - mu1 * mu1
+    sigma2_sq = F.avg_pool2d(img2 * img2, window_size, 1, window_size//2) - mu2 * mu2
+    sigma12 = F.avg_pool2d(img1 * img2, window_size, 1, window_size//2) - mu1 * mu2
+    # SSIM map
+    ssim_map = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1 * mu1 + mu2 * mu2 + C1) * (sigma1_sq + sigma2_sq + C2))
+    return ssim_map.mean() if size_average else ssim_map
 
 
 class Solver(nn.Module):
@@ -42,7 +59,13 @@ class Solver(nn.Module):
         config=vars(args)
         )
 
+        # build core networks
         self.nets, self.nets_ema = build_model(args)
+        # register utils and eval networks
+        # attach inline SSIM to nets for structural consistency
+        if args.lambda_cyc > 0 or args.lambda_inv > 0:
+            self.nets['ssim'] = ssim  # use inline SSIM function
+
         # below setattrs are to make networks be children of Solver, e.g., for self.to(self.device)
         for name, module in self.nets.items():
             utils.print_network(module, name)
@@ -99,7 +122,7 @@ class Solver(nn.Module):
     def train(self, loaders):
         args = self.args
         nets = self.nets
-        # nets_ema = self.nets_ema
+        nets_ema = self.nets_ema  # use EMA nets for eval
         optims = self.optims
 
         # fetch random validation images for debugging
@@ -255,7 +278,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
         else:  # x_ref is not None
             s_trg = nets.style_encoder(x_ref, y_trg)
 
-        x_fake = nets.generator(x_real, s_trg, masks=masks)
+        x_fake, _seg = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
     loss_fake = adv_loss(out, 0)
 
@@ -265,7 +288,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
                        reg=loss_reg.item())
 
 
-def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, masks=None):
+def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, masks=None, seg_gt=None):
     assert (z_trgs is None) != (x_refs is None)
     if z_trgs is not None:
         z_trg, z_trg2 = z_trgs
@@ -278,7 +301,8 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     else:
         s_trg = nets.style_encoder(x_ref, y_trg)
 
-    x_fake = nets.generator(x_real, s_trg, masks=masks)
+    # forward generator: get fake image and seg prediction
+    x_fake, seg_pred = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
     loss_adv = adv_loss(out, 1)
 
@@ -291,24 +315,39 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
         s_trg2 = nets.mapping_network(z_trg2, y_trg)
     else:
         s_trg2 = nets.style_encoder(x_ref2, y_trg)
-    x_fake2 = nets.generator(x_real, s_trg2, masks=masks)
+    x_fake2, _seg2 = nets.generator(x_real, s_trg2, masks=masks)
     x_fake2 = x_fake2.detach()
     loss_ds = torch.mean(torch.abs(x_fake - x_fake2))
 
-    # cycle-consistency loss
+    # cycle-consistency structural perceptual loss
     masks = nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
-    x_rec = nets.generator(x_fake, s_org, masks=masks)
-    
-    loss_per = nets.percep(x_rec, x_real) if args.lambda_beta>0 else None
-    loss_cyc = torch.mean(torch.abs(x_rec - x_real))
+    x_rec, _seg_rec = nets
+    # weather-invariant consistency loss
+    loss_inv_ssim = 1 - nets.ssim(x_real, x_fake)
+    loss_inv_per = nets.percep(x_fake, x_real) if args.lambda_beta > 0 else 0
+    loss_inv = loss_inv_ssim + loss_inv_per
+    # segmentation loss
+    if seg_gt is not None and args.lambda_seg > 0:
+        loss_seg = F.binary_cross_entropy(seg_pred, seg_gt)
+    else:
+        loss_seg = 0
 
-    loss = loss_adv + args.lambda_sty * loss_sty \
-        - args.lambda_ds * loss_ds + args.lambda_cyc * loss_cyc + args.lambda_beta * loss_per
-    return loss, Munch(adv=loss_adv.item(),
-                       sty=loss_sty.item(),
-                       ds=loss_ds.item(),
-                       cyc=loss_cyc.item())
+    # total generator loss
+    loss = loss_adv \
+        + args.lambda_sty * loss_sty \
+        - args.lambda_ds * loss_ds \
+        + args.lambda_cyc * loss_cyc \
+        + args.lambda_inv * loss_inv \
+        + args.lambda_seg * loss_seg
+    return loss, Munch(
+        adv=loss_adv.item(),
+        sty=loss_sty.item(),
+        ds=loss_ds.item(),
+        cyc=loss_cyc.item(),
+        inv=loss_inv.item() if isinstance(loss_inv, torch.Tensor) else 0,
+        seg=loss_seg.item() if isinstance(loss_seg, torch.Tensor) else 0
+    )
 
 
 def moving_average(model, model_test, beta=0.999):

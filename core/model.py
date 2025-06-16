@@ -14,10 +14,45 @@ import math
 from munch import Munch
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+import torch.nn.functional as F  # ensure functional alias is present
 
 from core.wing import FAN
+
+
+# Add weight demodulation modulated convolution class
+class ModulatedConv2d(nn.Module):
+    """
+    Conv2d layer with style-based weight modulation and demodulation (weight demodulation).
+    """
+    def __init__(self, in_channel, out_channel, kernel_size, style_dim, demodulate=True, eps=1e-8):
+        super().__init__()
+        self.eps = eps
+        self.demodulate = demodulate
+        # weight shape: [1, out_channel, in_channel, k, k]
+        self.weight = nn.Parameter(torch.randn(1, out_channel, in_channel, kernel_size, kernel_size))
+        # mapping from style vector to modulation scale
+        self.modulation = nn.Linear(style_dim, in_channel)
+        # store channel dims
+        self.in_channel = in_channel
+        self.out_channel = out_channel
+        self.kernel_size = kernel_size
+
+    def forward(self, x, style):
+        batch, in_c, h, w = x.shape
+        # compute style modulation
+        style = self.modulation(style).view(batch, 1, in_c, 1, 1)
+        # modulate
+        weight = self.weight * style
+        # demodulation
+        if self.demodulate:
+            demod = torch.rsqrt((weight * weight).sum([2,3,4]) + self.eps)
+            weight = weight * demod.view(batch, self.out_channel, 1, 1, 1)
+        # reshape for grouped convolution
+        weight = weight.view(batch * self.out_channel, in_c, self.kernel_size, self.kernel_size)
+        x = x.view(1, batch * in_c, h, w)
+        out = F.conv2d(x, weight, padding=self.kernel_size//2, groups=batch)
+        return out.view(batch, self.out_channel, h, w)
 
 
 class ResBlk(nn.Module):
@@ -64,34 +99,19 @@ class ResBlk(nn.Module):
         return x / math.sqrt(2)  # unit variance
 
 
-class AdaIN(nn.Module):
-    def __init__(self, style_dim, num_features):
-        super().__init__()
-        self.norm = nn.InstanceNorm2d(num_features, affine=False)
-        self.fc = nn.Linear(style_dim, num_features*2)
-
-    def forward(self, x, s):
-        h = self.fc(s)
-        h = h.view(h.size(0), h.size(1), 1, 1)
-        gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
-
-
 class AdainResBlk(nn.Module):
     def __init__(self, dim_in, dim_out, style_dim=64, w_hpf=0,
                  actv=nn.LeakyReLU(0.2), upsample=False):
         super().__init__()
-        self.w_hpf = w_hpf
         self.actv = actv
         self.upsample = upsample
         self.learned_sc = dim_in != dim_out
         self._build_weights(dim_in, dim_out, style_dim)
 
     def _build_weights(self, dim_in, dim_out, style_dim=64):
-        self.conv1 = nn.Conv2d(dim_in, dim_out, 3, 1, 1)
-        self.conv2 = nn.Conv2d(dim_out, dim_out, 3, 1, 1)
-        self.norm1 = AdaIN(style_dim, dim_in)
-        self.norm2 = AdaIN(style_dim, dim_out)
+        # Use modulated convolution with weight demodulation
+        self.conv1 = ModulatedConv2d(dim_in, dim_out, 3, style_dim)
+        self.conv2 = ModulatedConv2d(dim_out, dim_out, 3, style_dim)
         if self.learned_sc:
             self.conv1x1 = nn.Conv2d(dim_in, dim_out, 1, 1, 0, bias=False)
 
@@ -103,21 +123,18 @@ class AdainResBlk(nn.Module):
         return x
 
     def _residual(self, x, s):
-        x = self.norm1(x, s)
+        # apply activation and upsample before modulated conv
         x = self.actv(x)
         if self.upsample:
             x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = self.conv1(x)
-        x = self.norm2(x, s)
+        x = self.conv1(x, s)
         x = self.actv(x)
-        x = self.conv2(x)
+        x = self.conv2(x, s)
         return x
 
     def forward(self, x, s):
         out = self._residual(x, s)
-        if self.w_hpf == 0:
-            out = (out + self._shortcut(x)) / math.sqrt(2)
-        return out
+        return (out + self._shortcut(x)) / math.sqrt(2)
 
 
 class HighPass(nn.Module):
@@ -138,13 +155,23 @@ class Generator(nn.Module):
         super().__init__()
         dim_in = 2**14 // img_size
         self.img_size = img_size
+        # Shared encoder
         self.from_rgb = nn.Conv2d(3, dim_in, 3, 1, 1)
         self.encode = nn.ModuleList()
-        self.decode = nn.ModuleList()
-        self.to_rgb = nn.Sequential(
-            nn.InstanceNorm2d(dim_in, affine=True),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 3, 1, 1, 0))
+        # Decode blocks for clues and global branches
+        self.decode_clues = nn.ModuleList()
+        self.decode_glo = nn.ModuleList()
+        # Segmentation head
+        self.to_seg = nn.Sequential(nn.Conv2d(dim_in, 1, 1), nn.Sigmoid())
+        # Weather clues head
+        self.to_clues = nn.Sequential(nn.InstanceNorm2d(dim_in, affine=True),
+                                     nn.LeakyReLU(0.2),
+                                     nn.Conv2d(dim_in, 1, 1),
+                                     nn.Sigmoid())
+        # Global translation head
+        self.to_glo = nn.Sequential(nn.InstanceNorm2d(dim_in, affine=True),
+                                    nn.LeakyReLU(0.2),
+                                    nn.Conv2d(dim_in, 3, 1, 1, 0))
 
         # down/up-sampling blocks
         repeat_num = int(np.log2(img_size)) - 4
@@ -154,37 +181,44 @@ class Generator(nn.Module):
             dim_out = min(dim_in*2, max_conv_dim)
             self.encode.append(
                 ResBlk(dim_in, dim_out, normalize=True, downsample=True))
-            self.decode.insert(
-                0, AdainResBlk(dim_out, dim_in, style_dim,
-                               w_hpf=w_hpf, upsample=True))  # stack-like
+            # shared decode for clues and glo
+            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_in, style_dim,
+                                 w_hpf=w_hpf, upsample=True))
+            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_in, style_dim,
+                                 w_hpf=w_hpf, upsample=True))
             dim_in = dim_out
 
         # bottleneck blocks
         for _ in range(2):
             self.encode.append(
                 ResBlk(dim_out, dim_out, normalize=True))
-            self.decode.insert(
-                0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
+            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
+            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
 
         if w_hpf > 0:
-            device = torch.device(
-                'cuda' if torch.cuda.is_available() else 'cpu')
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.hpf = HighPass(w_hpf, device)
 
-    def forward(self, x, s, masks=None):
-        x = self.from_rgb(x)
-        cache = {}
+    def forward(self, x, s, masks=None, p=1.0):
+        # Shared encoding
+        feat = self.from_rgb(x)
         for block in self.encode:
-            if (masks is not None) and (x.size(2) in [32, 64, 128]):
-                cache[x.size(2)] = x
-            x = block(x)
-        for block in self.decode:
-            x = block(x, s)
-            if (masks is not None) and (x.size(2) in [32, 64, 128]):
-                mask = masks[0] if x.size(2) in [32] else masks[1]
-                mask = F.interpolate(mask, size=x.size(2), mode='bilinear')
-                x = x + self.hpf(mask * cache[x.size(2)])
-        return self.to_rgb(x)
+            feat = block(feat)
+        # Segmentation map
+        seg = self.to_seg(feat)
+        # Weather clues branch
+        clues_feat = feat
+        for block in self.decode_clues:
+            clues_feat = block(clues_feat, s)
+        clues = self.to_clues(clues_feat)
+        # Global translation branch
+        glo_feat = feat
+        for block in self.decode_glo:
+            glo_feat = block(glo_feat, s)
+        glo = self.to_glo(glo_feat)
+        # Combine according to Eq. (1)
+        out = clues * glo + (1 - clues) * x
+        return out, seg
 
 
 class MappingNetwork(nn.Module):
@@ -208,15 +242,26 @@ class MappingNetwork(nn.Module):
                                             nn.ReLU(),
                                             nn.Linear(512, style_dim))]
 
-    def forward(self, z, y):
+    def forward(self, z, y, p=1.0):
+        """
+        Generate weather control code with intensity interpolation.
+        z: random latent code (batch, latent_dim)
+        y: target domain labels (batch,)
+        p: intensity factor for interpolation
+        """
         h = self.shared(z)
-        out = []
+        styles = []
         for layer in self.unshared:
-            out += [layer(h)]
-        out = torch.stack(out, dim=1)  # (batch, num_domains, style_dim)
-        idx = torch.LongTensor(range(y.size(0))).to(y.device)
-        s = out[idx, y]  # (batch, style_dim)
-        return s
+            styles.append(layer(h))
+        styles = torch.stack(styles, dim=1)  # (batch, num_domains, style_dim)
+        # Compute domain-invariant mean
+        mean_style = styles.mean(dim=1)  # (batch, style_dim)
+        # Select domain-specific style
+        idx = torch.arange(y.size(0), device=y.device)
+        w_i = styles[idx, y]  # (batch, style_dim)
+        # Interpolate with intensity p
+        w = mean_style + p * (w_i - mean_style)
+        return w
 
 
 class StyleEncoder(nn.Module):
