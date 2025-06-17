@@ -31,6 +31,9 @@ def save_json(json_file, filename):
 
 
 def print_network(network, name):
+    if not hasattr(network, 'parameters'):
+        print(f"Skipping {name}, no parameters to print")
+        return
     num_params = 0
     for p in network.parameters():
         num_params += p.numel()

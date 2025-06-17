@@ -78,6 +78,9 @@ class Solver(nn.Module):
             for net in self.nets.keys():
                 if net == 'fan':
                     continue
+                # Skip nets that do not have parameters (e.g., ssim)
+                if not hasattr(self.nets[net], 'parameters'):
+                    continue
                 self.optims[net] = torch.optim.Adam(
                     params=self.nets[net].parameters(),
                     lr=args.f_lr if net == 'mapping_network' else args.lr,
@@ -126,8 +129,8 @@ class Solver(nn.Module):
         optims = self.optims
 
         # fetch random validation images for debugging
-        fetcher = InputFetcher(loaders.src, loaders.ref, args.latent_dim, 'train')
-        fetcher_val = InputFetcher(loaders.val, None, args.latent_dim, 'val')
+        fetcher = InputFetcher(loaders.src, loaders.ref, loaders.seg, args.latent_dim, 'train')
+        fetcher_val = InputFetcher(loaders.val, None, None, args.latent_dim, 'val')
         inputs_val = next(fetcher_val)
 
         # resume training if necessary
@@ -170,8 +173,11 @@ class Solver(nn.Module):
 
             # train the generator
             with torch.amp.autocast('cuda'):
+                # include segmentation ground-truth masks
+                seg_gt = inputs.get('seg_gt', None)
                 g_loss, g_losses_latent = compute_g_loss(
-                    nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2], masks=masks)
+                    nets, args, x_real, y_org, y_trg,
+                    z_trgs=[z_trg, z_trg2], masks=masks, seg_gt=seg_gt)
             self._reset_grad()
             scaler.scale(g_loss).backward()
             scaler.step(optims.generator)
@@ -180,8 +186,11 @@ class Solver(nn.Module):
             scaler.update()
 
             with torch.amp.autocast('cuda'):
+                # include segmentation masks for reference mode if available
+                seg_gt = inputs.get('seg_gt', None)
                 g_loss, g_losses_ref = compute_g_loss(
-                    nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2], masks=masks)
+                    nets, args, x_real, y_org, y_trg,
+                    x_refs=[x_ref, x_ref2], masks=masks, seg_gt=seg_gt)
             self._reset_grad()
             scaler.scale(g_loss).backward()
             scaler.step(optims.generator)
@@ -342,7 +351,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     if seg_gt is not None and args.lambda_seg > 0:
         # multi-class segmentation: seg_pred is raw logits (N, num_domains, H, W), seg_gt has shape (N, H, W)
         loss_s = F.cross_entropy(seg_pred, seg_gt)
-        loss_c = F.cross_entropy(cls_logits, y_trg)
+        loss_c = F.cross_entropy(cls_logits, y_org)
         loss_seg = loss_s + loss_c
     else:
         loss_seg = 0

@@ -151,22 +151,30 @@ class HighPass(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, img_size=256, style_dim=64, max_conv_dim=512, w_hpf=1, num_domains=5):
+    def __init__(
+        self,
+        img_size=256,
+        style_dim=64,
+        max_conv_dim=512,
+        w_hpf=1,
+        num_domains=5,
+        seg_classes=5
+    ):
         super().__init__()
         dim_in = 2**14 // img_size
-        self.img_size = img_size
-        self.num_domains = num_domains  # number of weather classes
+        self.seg_classes  = seg_classes
+        self.num_domains  = num_domains
 
-        # Shared encoder
-        self.from_rgb = nn.Conv2d(3, dim_in, 3, 1, 1)
-        self.encode = nn.ModuleList()
-        # Classification head (weather-type logits)
-        self.to_cls = nn.Linear(dim_in, num_domains)
-        # global pooling for classification
+        #### 1) Shared encoder
+        self.from_rgb = nn.Conv2d(3, dim_in, kernel_size=3, padding=1)
+        self.encode   = nn.ModuleList()
+
+        #### 2) Classification head
         self.class_pool = nn.AdaptiveAvgPool2d(1)
-        # Decode blocks for clues and global branches
+        # Decode blocks for clues, global branches and segmentation branch
         self.decode_clues = nn.ModuleList()
         self.decode_glo = nn.ModuleList()
+        self.decode_seg = nn.ModuleList()  # add segmentation decoder list
         # Segmentation head: per-pixel multi-class logits for each weather type
         self.to_seg = nn.Conv2d(dim_in, self.num_domains, 1)
 
@@ -343,7 +351,10 @@ class Discriminator(nn.Module):
 
 
 def build_model(args):
-    generator = nn.DataParallel(Generator(args.img_size, args.style_dim, args.max_conv_dim, args.w_hpf, args.num_domains))
+    # Build generator with segmentation classes
+    generator = nn.DataParallel(Generator(
+        args.img_size, args.style_dim, args.max_conv_dim,
+        args.w_hpf, args.num_domains, args.seg_classes))
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
     style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains, args.max_conv_dim))
     discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains, args.max_conv_dim))

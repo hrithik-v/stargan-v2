@@ -15,8 +15,7 @@ from munch import Munch
 from torch.backends import cudnn
 import torch
 
-from core.data_loader import get_train_loader
-from core.data_loader import get_test_loader
+from core.data_loader import get_train_loader, get_test_loader
 from core.solver import Solver
 
 
@@ -39,23 +38,39 @@ def main(args):
     if args.mode == 'train':
         assert len(subdirs(args.train_img_dir)) == args.num_domains
         assert len(subdirs(args.val_img_dir)) == args.num_domains
-        loaders = Munch(src=get_train_loader(root=args.train_img_dir,
-                                             which='source',
-                                             img_size=args.img_size,
-                                             batch_size=args.batch_size,
-                                             prob=args.randcrop_prob,
-                                             num_workers=args.num_workers, max_per_class=args.max_per_class),
-                        ref=get_train_loader(root=args.train_img_dir,
-                                             which='reference',
-                                             img_size=args.img_size,
-                                             batch_size=args.batch_size,
-                                             prob=args.randcrop_prob,
-                                             num_workers=args.num_workers, max_per_class=args.max_per_class),
-                        val=get_test_loader(root=args.val_img_dir,
-                                            img_size=args.img_size,
-                                            batch_size=args.val_batch_size,
-                                            shuffle=True,
-                                            num_workers=args.num_workers))
+        # Paired source and segmentation loaders
+        loader_src, loader_seg = get_train_loader(
+            root=args.train_img_dir,
+            which='source',
+            img_size=args.img_size,
+            batch_size=args.batch_size,
+            prob=args.randcrop_prob,
+            num_workers=args.num_workers,
+            max_per_class=args.max_per_class,
+            seg_root=args.seg_dir
+        )
+        # Reference loader (seg not needed)
+        loader_ref, _ = get_train_loader(
+            root=args.train_img_dir,
+            which='reference',
+            img_size=args.img_size,
+            batch_size=args.batch_size,
+            prob=args.randcrop_prob,
+            num_workers=args.num_workers,
+            max_per_class=args.max_per_class
+        )
+        loaders = Munch(
+            src=loader_src,
+            ref=loader_ref,
+            seg=loader_seg,
+            val=get_test_loader(
+                root=args.val_img_dir,
+                img_size=args.img_size,
+                batch_size=args.val_batch_size,
+                shuffle=True,
+                num_workers=args.num_workers
+            )
+        )
         solver.train(loaders)
     elif args.mode == 'sample':
         assert len(subdirs(args.src_dir)) == args.num_domains
@@ -88,6 +103,7 @@ if __name__ == '__main__':
                         help='Image resolution')
     parser.add_argument('--num_domains', type=int, default=5,
                         help='Number of domains')
+    parser.add_argument('--seg_classes', type=int, default=7)
     parser.add_argument('--latent_dim', type=int, default=16,
                         help='Latent vector dimension')
     parser.add_argument('--hidden_dim', type=int, default=512,
@@ -99,7 +115,9 @@ if __name__ == '__main__':
 
 
     # weight for objective functions
-    parser.add_argument('--lambda_reg', type=float, default=1,
+    parser.add_argument('--lambda_seg', type=float, default=20)
+    parser.add_argument('--lambda_inv', type=float, default=1)
+    parser.add_argument('--lambda_reg', type=float, default=10,
                         help='Weight for R1 regularization')
     parser.add_argument('--lambda_cyc', type=float, default=10,
                         help='Weight for cyclic consistency loss')
@@ -150,6 +168,7 @@ if __name__ == '__main__':
                         help='Directory containing training images')
     parser.add_argument('--val_img_dir', type=str, default='/kaggle/input/five-weather-23k',
                         help='Directory containing validation images')
+    parser.add_argument('--seg_dir', type=str, default='/kaggle/working/seg_masks')
     parser.add_argument('--sample_dir', type=str, default='expr/samples',
                         help='Directory for saving generated images')
     parser.add_argument('--checkpoint_dir', type=str, default='expr/checkpoints',
