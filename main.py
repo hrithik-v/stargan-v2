@@ -117,17 +117,15 @@ if __name__ == '__main__':
     # weight for objective functions
     parser.add_argument('--lambda_seg', type=float, default=20)
     parser.add_argument('--lambda_inv', type=float, default=1)
-    parser.add_argument('--lambda_reg', type=float, default=10,
-                        help='Weight for R1 regularization')
-    parser.add_argument('--lambda_cyc', type=float, default=10,
-                        help='Weight for cyclic consistency loss')
+    parser.add_argument('--lambda_reg', type=float, default=10)
+    parser.add_argument('--lambda_cyc', type=float, default=10)
     parser.add_argument('--lambda_sty', type=float, default=1,
                         help='Weight for style reconstruction loss')
     parser.add_argument('--lambda_ds', type=float, default=1,
                         help='Weight for diversity sensitive loss')
     parser.add_argument('--ds_iter', type=int, default=100000,
                         help='Number of iterations to optimize diversity sensitive loss')
-    parser.add_argument('--w_hpf', type=float, default=0,
+    parser.add_argument('--w_hpf', type=float, default=1,
                         help='weight for high-pass filtering')
 
     # training arguments

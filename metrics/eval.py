@@ -63,7 +63,7 @@ def calculate_metrics(nets, args, step, mode):
                 N = x_src.size(0)
                 x_src = x_src.to(device)
                 y_trg = torch.tensor([trg_idx] * N).to(device)
-                masks = nets.fan.get_heatmap(x_src) if args.w_hpf > 0 else None
+                masks = None # nets.fan.get_heatmap(x_src) if args.w_hpf > 0 else None
 
                 # generate 10 outputs from the same input
                 group_of_images = []

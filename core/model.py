@@ -7,6 +7,8 @@ This work is licensed under the Creative Commons Attribution-NonCommercial
 http://creativecommons.org/licenses/by-nc/4.0/ or send a letter to
 Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
 """
+import os
+os.environ["WANDB_MODE"] = "disabled"
 
 import copy
 import math
@@ -39,19 +41,21 @@ class ModulatedConv2d(nn.Module):
         self.kernel_size = kernel_size
 
     def forward(self, x, style):
+        # batch, in_c, h, w from input
         batch, in_c, h, w = x.shape
-        # compute style modulation
+        # compute style modulation and reshape using local in_c
         style = self.modulation(style).view(batch, 1, in_c, 1, 1)
-        # modulate
-        weight = self.weight * style
-        # demodulation
+        # modulate weights
+        weight = self.weight * style  # (batch, out_c, in_c, k, k)
+        # weight demodulation
         if self.demodulate:
-            demod = torch.rsqrt((weight * weight).sum([2,3,4]) + self.eps)
+            demod = torch.rsqrt((weight * weight).sum([2, 3, 4]) + self.eps)
             weight = weight * demod.view(batch, self.out_channel, 1, 1, 1)
         # reshape for grouped convolution
         weight = weight.view(batch * self.out_channel, in_c, self.kernel_size, self.kernel_size)
         x = x.view(1, batch * in_c, h, w)
-        out = F.conv2d(x, weight, padding=self.kernel_size//2, groups=batch)
+        out = F.conv2d(x, weight, padding=self.kernel_size // 2, groups=batch)
+        # reshape back to (batch, out_c, h, w)
         return out.view(batch, self.out_channel, h, w)
 
 
@@ -150,6 +154,13 @@ class HighPass(nn.Module):
         return F.conv2d(x, filter, padding=1, groups=x.size(1))
 
 
+# -------------------------------------------------------------------
+# Assumes you have these blocks defined exactly as in StarGAN v2:
+#   - ResBlk(in_c, out_c, normalize: bool, downsample: bool=False)
+#   - AdainResBlk(in_c, out_c, style_dim, w_hpf=0, upsample: bool=False)
+#   - HighPass(w_hpf, device)
+# -------------------------------------------------------------------
+
 class Generator(nn.Module):
     def __init__(
         self,
@@ -158,92 +169,143 @@ class Generator(nn.Module):
         max_conv_dim=512,
         w_hpf=1,
         num_domains=5,
-        seg_classes=5
+        seg_classes=7,  # e.g. Ground, Structure, Sky, …
     ):
         super().__init__()
-        dim_in = 2**14 // img_size
-        self.seg_classes  = seg_classes
-        self.num_domains  = num_domains
+        # 1) Base channel count
+        dim_in = 2**14 // img_size  # e.g. 64 for 256x256
 
-        #### 1) Shared encoder
-        self.from_rgb = nn.Conv2d(3, dim_in, kernel_size=3, padding=1)
+        # 2) Shared Encoder
+        self.from_rgb = nn.Conv2d(3, dim_in, 3, 1, 1)
         self.encode   = nn.ModuleList()
 
-        #### 2) Classification head
-        self.class_pool = nn.AdaptiveAvgPool2d(1)
-        # Decode blocks for clues, global branches and segmentation branch
-        self.decode_clues = nn.ModuleList()
-        self.decode_glo = nn.ModuleList()
-        self.decode_seg = nn.ModuleList()  # add segmentation decoder list
-        # Segmentation head: per-pixel multi-class logits for each weather type
-        self.to_seg = nn.Conv2d(dim_in, self.num_domains, 1)
+        # 3) Segmentation head
+        self.decode_seg = nn.ModuleList()
+        self.to_seg     = nn.Conv2d(dim_in, seg_classes, 1)
 
-        # Weather clues head
-        self.to_clues = nn.Sequential(
-            nn.InstanceNorm2d(dim_in, affine=True),
+        # 4) Weather‐clue decoder
+        self.decode_clues = nn.ModuleList()
+        self.to_clues     = nn.Sequential(
+            nn.InstanceNorm2d(dim_in + seg_classes, affine=True),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 1, 1),
+            nn.Conv2d(dim_in + seg_classes, 1, 1),
             nn.Sigmoid()
         )
 
-        # Global translation head
-        self.to_glo = nn.Sequential(
+        # 5) Global‐image decoder
+        self.decode_glo = nn.ModuleList()
+        self.to_glo     = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 3, 1, 1, 0)
+            nn.Conv2d(dim_in, 3, 1)
         )
 
-        # down/up-sampling blocks
-        repeat_num = int(np.log2(img_size)) - 4
+        # Build hourglass down/up structure
+        repeat = int(math.log2(img_size)) - 4
         if w_hpf > 0:
-            repeat_num += 1
-        for _ in range(repeat_num):
-            dim_out = min(dim_in * 2, max_conv_dim)
+            repeat += 1
+
+        enc_channels = dim_in
+        for _ in range(repeat):
+            dim_out = min(enc_channels * 2, max_conv_dim)
+
+            # a) Encoder block
             self.encode.append(
-                ResBlk(dim_in, dim_out, normalize=True, downsample=True))
-            # shared decode for clues and glo
-            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_in, style_dim, w_hpf=w_hpf, upsample=True))
-            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_in, style_dim, w_hpf=w_hpf, upsample=True))
-            dim_in = dim_out
+                ResBlk(enc_channels, dim_out, normalize=True, downsample=True)
+            )
 
-        # bottleneck blocks
+            # b) Segmentation decoder (mirror)
+            self.decode_seg.insert(0, nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(dim_out, enc_channels, 3, 1, 1),
+                nn.ReLU()
+            ))
+
+            # c) Weather-clue decoder (mirroring encoder)
+            self.decode_clues.insert(0,
+                AdainResBlk(dim_out, enc_channels, style_dim,
+                            w_hpf=w_hpf, upsample=True)
+            )
+
+            # d) Global decoder block (mirroring encoder)
+            self.decode_glo.insert(0,
+                AdainResBlk(dim_out, enc_channels, style_dim,
+                            w_hpf=w_hpf, upsample=True)
+            )
+
+            enc_channels = dim_out
+
+        # 6) Bottleneck (no spatial change)
         for _ in range(2):
-            self.encode.append(ResBlk(dim_out, dim_out, normalize=True))
-            self.decode_clues.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
-            self.decode_glo.insert(0, AdainResBlk(dim_out, dim_out, style_dim, w_hpf=w_hpf))
+            self.encode.append(
+                ResBlk(enc_channels, enc_channels, normalize=True)
+            )
+            self.decode_seg.insert(0, nn.Sequential(
+                nn.Conv2d(enc_channels, enc_channels, 3, 1, 1),
+                nn.ReLU()
+            ))
+            self.decode_clues.insert(0,
+                AdainResBlk(enc_channels, enc_channels, style_dim,
+                            w_hpf=w_hpf)
+            )
+            self.decode_glo.insert(0,
+                AdainResBlk(enc_channels, enc_channels, style_dim,
+                            w_hpf=w_hpf)
+            )
 
+        # 7) Classification head
+        self.class_pool = nn.AdaptiveAvgPool2d(1)
+        self.to_cls     = nn.Linear(enc_channels, num_domains)
+
+        # 8) Optional high‐pass filter
         if w_hpf > 0:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.hpf = HighPass(w_hpf, device)
+        else:
+            self.hpf = None
 
-    def forward(self, x, s, masks=None, p=1.0):
-        # Shared encoding
+    def forward(self, x, style_code, masks=None, p=1.0):
+        # ---- Encode ----
         feat = self.from_rgb(x)
         for block in self.encode:
             feat = block(feat)
-        # Weather classification logits from Sseg
-        cls_feat = self.class_pool(feat).view(feat.size(0), -1)
-        logits = self.to_cls(cls_feat)
-        # Segmentation logits for multi-class weather-cue
-        seg_logits = self.to_seg(feat)
-        seg = F.softmax(seg_logits, dim=1)
 
-        # Weather clues branch
+        # ---- Classification ----
+        cls_feat       = self.class_pool(feat).view(feat.size(0), -1)
+        weather_logits = self.to_cls(cls_feat)
+
+        # ---- Segmentation Decode ----
+        seg_logits = feat
+        for blk in self.decode_seg:
+            seg_logits = blk(seg_logits)
+        seg_logits = self.to_seg(seg_logits)
+
+        # b) Weather-clue decoder
         clues_feat = feat
-        for block in self.decode_clues:
-            clues_feat = block(clues_feat, s)
-        clues = self.to_clues(clues_feat)
+        for blk in self.decode_clues:
+            clues_feat = blk(clues_feat, style_code)
 
-        # Global translation branch
+        # Combine segmentation map and clue features
+        combined_feat = torch.cat([clues_feat, seg_logits], dim=1)
+        clues_logits = self.to_clues(combined_feat)
+
+        # c) Global feature decoder
         glo_feat = feat
-        for block in self.decode_glo:
-            glo_feat = block(glo_feat, s)
-        glo = self.to_glo(glo_feat)
+        for blk in self.decode_glo:
+            glo_feat = blk(glo_feat, style_code)
+        glo = self.to_glo(glo_feat)  # (B,3,H,W)
 
-        # Combine according to Eq. (1)
-        out = clues * glo + (1 - clues) * x
+        # ---- Blend & Return ----
+        # expand mask to 3 channels
+        if clues_logits.shape[1] == 1:
+            clues_logits = clues_logits.expand(-1, 3, -1, -1)
+        out = clues_logits * glo + (1 - clues_logits) * x
 
-        return out, seg_logits, logits
+        return out, seg_logits, weather_logits
+
+
+
+
 
 
 class MappingNetwork(nn.Module):
@@ -362,6 +424,8 @@ def build_model(args):
     # mapping_network_ema = copy.deepcopy(mapping_network)
     # style_encoder_ema = copy.deepcopy(style_encoder)
 
+    print(generator)
+
     nets = Munch(generator=generator,
                  mapping_network=mapping_network,
                  style_encoder=style_encoder,
@@ -371,10 +435,10 @@ def build_model(args):
     #                  mapping_network=mapping_network_ema,
     #                  style_encoder=style_encoder_ema)
 
-    if args.w_hpf > 0:
-        fan = nn.DataParallel(FAN(fname_pretrained=args.wing_path).eval())
-        fan.get_heatmap = fan.module.get_heatmap
-        nets.fan = fan
-        nets_ema.fan = fan
+    # if args.w_hpf > 0:
+    #     fan = nn.DataParallel(FAN(fname_pretrained=args.wing_path).eval())
+    #     fan.get_heatmap = fan.module.get_heatmap
+    #     nets.fan = fan
+    #     nets_ema.fan = fan
 
     return nets, nets_ema

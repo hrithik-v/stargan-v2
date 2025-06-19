@@ -47,7 +47,7 @@ class Args:
     latent_dim = LATENT_DIM
     style_dim = STYLE_DIM
     max_conv_dim = MAX_CONV_DIM
-    w_hpf = 0
+    w_hpf = 1.0
     ema = False
     wing_path = ''
     hidden_dim = HIDDEN_DIM

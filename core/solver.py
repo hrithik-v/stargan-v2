@@ -101,6 +101,8 @@ class Solver(nn.Module):
             self.percep = VGGPerceptualLoss(self.device)
             # Ensure no gradients are computed for perceptual network
             for p in self.percep.parameters(): p.requires_grad = False
+            # DataParallelize VGG perceptual loss across available GPUs
+            self.percep = nn.DataParallel(self.percep)
             # Expose in nets for compute_g_loss lookup
             self.nets['percep'] = self.percep
             
@@ -152,7 +154,7 @@ class Solver(nn.Module):
             x_ref, x_ref2, y_trg = inputs.x_ref, inputs.x_ref2, inputs.y_ref
             z_trg, z_trg2 = inputs.z_trg, inputs.z_trg2
 
-            masks = nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
+            masks = None # nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
             # train the discriminator
             with torch.amp.autocast('cuda'):
@@ -331,7 +333,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     loss_ds = torch.mean(torch.abs(x_fake - x_fake2))
 
     # cycle structural perceptual consistency (Eq.7): SSIM + perceptual VGG loss
-    masks = nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
+    masks = None # nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
     x_rec, _seg_rec, _cls_rec = nets.generator(x_fake, s_org, masks=masks)
     # SSIM term between x and reconstructed image
