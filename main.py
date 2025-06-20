@@ -39,19 +39,19 @@ def main(args):
         assert len(subdirs(args.train_img_dir)) == args.num_domains
         assert len(subdirs(args.val_img_dir)) == args.num_domains
         # Paired source and segmentation loaders
-        loader_src, loader_seg = get_train_loader(
-            root=args.train_img_dir,
+        loader_src = get_train_loader(
+            img_root=args.train_img_dir,
+            mask_root=args.seg_dir,
             which='source',
             img_size=args.img_size,
             batch_size=args.batch_size,
             prob=args.randcrop_prob,
             num_workers=args.num_workers,
-            max_per_class=args.max_per_class,
-            seg_root=args.seg_dir
+            max_per_class=args.max_per_class
         )
         # Reference loader (seg not needed)
-        loader_ref, _ = get_train_loader(
-            root=args.train_img_dir,
+        loader_ref = get_train_loader(
+            img_root=args.train_img_dir,
             which='reference',
             img_size=args.img_size,
             batch_size=args.batch_size,
@@ -62,7 +62,6 @@ def main(args):
         loaders = Munch(
             src=loader_src,
             ref=loader_ref,
-            seg=loader_seg,
             val=get_test_loader(
                 root=args.val_img_dir,
                 img_size=args.img_size,

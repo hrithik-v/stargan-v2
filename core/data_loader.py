@@ -30,43 +30,38 @@ def listdir(dname):
     return fnames
 
 
-class DefaultDataset(data.Dataset):
-    def __init__(self, img_root, mask_root=None, transform=None, transform_mask=None):
-        self.samples = listdir(img_root)
-        self.samples.sort()
+class DefaultDataset(ImageFolder):
+    def __init__(self, root, mask_root=None, transform=None, transform_mask=None):
+        super().__init__(root, transform=None)
         self.transform = transform
         self.transform_mask = transform_mask
         self.mask_root = mask_root
-        self.targets = None  # unused unless needed
+        self.loader = lambda path: Image.open(path).convert('RGB')
 
     def __getitem__(self, index):
-        img_path = self.samples[index]
-        img = Image.open(img_path).convert('RGB')
+        path, target = self.samples[index]
+        sample = self.loader(path)
 
-        # Construct corresponding mask path
+        seed = np.random.randint(2147483647)
+        if self.transform is not None:
+            random.seed(seed)
+            torch.manual_seed(seed)
+            sample = self.transform(sample)
+
         if self.mask_root is not None:
-            rel_path = Path(img_path).relative_to(Path(img_path).parents[1])  # class/image.png
-            # Always use .png extension for mask
+            rel_path = Path(path).relative_to(self.root)
             rel_path_png = rel_path.with_suffix('.png')
             mask_path = Path(self.mask_root) / rel_path_png
-            mask = Image.open(mask_path).convert('L')  # L for single-channel mask
+            mask = Image.open(mask_path).convert('L')
 
-            # Apply joint transformations
-            if self.transform is not None:
-                seed = np.random.randint(2147483647)
-                random.seed(seed)
-                torch.manual_seed(seed)
-                img = self.transform(img)
-
+            if self.transform_mask is not None:
                 random.seed(seed)
                 torch.manual_seed(seed)
                 mask = self.transform_mask(mask)
+            
+            return sample, target, mask
         else:
-            mask = None
-            if self.transform is not None:
-                img = self.transform(img)
-
-        return img, mask
+            return sample, target
 
     def __len__(self):
         return len(self.samples)
@@ -134,9 +129,11 @@ def get_train_loader(img_root, mask_root=None, which='source', img_size=256,
 
     if which == 'source':
         dataset = DefaultDataset(img_root, mask_root, transform=transform_img, transform_mask=transform_mask)
-        # Optional: class balancing here if needed
+    elif which == 'reference':
+        # Unpaired reference images without segmentation masks
+        dataset = ReferenceDataset(img_root, transform=transform_img)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported loader type: {which}")
 
     return data.DataLoader(dataset=dataset,
                            batch_size=batch_size,
@@ -201,37 +198,42 @@ class InputFetcher:
         self.latent_dim = latent_dim
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.mode = mode
+        self.iter = iter(self.loader)
+        if self.loader_ref is not None:
+            self.iter_ref = iter(self.loader_ref)
 
     def _fetch_inputs(self):
         try:
-            x, y = next(self.iter)
-        except (AttributeError, StopIteration):
+            return next(self.iter)
+        except StopIteration:
             self.iter = iter(self.loader)
-            x, y = next(self.iter)
-        return x, y
+            return next(self.iter)
 
     def _fetch_refs(self):
         try:
             x, x2, y = next(self.iter_ref)
-        except (AttributeError, StopIteration):
+        except StopIteration:
             self.iter_ref = iter(self.loader_ref)
             x, x2, y = next(self.iter_ref)
         return x, x2, y
 
     def __next__(self):
-        x, y = self._fetch_inputs()
         if self.mode == 'train':
+            x, y, mask = self._fetch_inputs()
             x_ref, x_ref2, y_ref = self._fetch_refs()
             z_trg = torch.randn(x.size(0), self.latent_dim)
             z_trg2 = torch.randn(x.size(0), self.latent_dim)
             inputs = Munch(x_src=x, y_src=y, y_ref=y_ref,
                            x_ref=x_ref, x_ref2=x_ref2,
-                           z_trg=z_trg, z_trg2=z_trg2)
+                           z_trg=z_trg, z_trg2=z_trg2,
+                           seg_gt=mask)
         elif self.mode == 'val':
+            x, y = self._fetch_inputs()
             x_ref, y_ref = self._fetch_inputs()
             inputs = Munch(x_src=x, y_src=y,
                            x_ref=x_ref, y_ref=y_ref)
         elif self.mode == 'test':
+            x, y = self._fetch_inputs()
             inputs = Munch(x=x, y=y)
         else:
             raise NotImplementedError

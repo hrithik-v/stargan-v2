@@ -102,7 +102,7 @@ class Solver(nn.Module):
             # Ensure no gradients are computed for perceptual network
             for p in self.percep.parameters(): p.requires_grad = False
             # DataParallelize VGG perceptual loss across available GPUs
-            self.percep = nn.DataParallel(self.percep)
+            # self.percep = nn.DataParallel(self.percep)
             # Expose in nets for compute_g_loss lookup
             self.nets['percep'] = self.percep
             
@@ -131,8 +131,8 @@ class Solver(nn.Module):
         optims = self.optims
 
         # fetch random validation images for debugging
-        fetcher = InputFetcher(loaders.src, loaders.ref, loaders.seg, args.latent_dim, 'train')
-        fetcher_val = InputFetcher(loaders.val, None, None, args.latent_dim, 'val')
+        fetcher = InputFetcher(loaders.src, loaders.ref, args.latent_dim, 'train')
+        fetcher_val = InputFetcher(loaders.val, None, args.latent_dim, 'val')
         inputs_val = next(fetcher_val)
 
         # resume training if necessary
@@ -351,6 +351,8 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     # segmentation and classification losses
     # weakly-supervised segmentation & classification losses (Eq.5)
     if seg_gt is not None and args.lambda_seg > 0:
+        # Squeeze the channel dimension from seg_gt and convert to long for cross_entropy
+        seg_gt = seg_gt.squeeze(1).long()
         # multi-class segmentation: seg_pred is raw logits (N, num_domains, H, W), seg_gt has shape (N, H, W)
         loss_s = F.cross_entropy(seg_pred, seg_gt)
         loss_c = F.cross_entropy(cls_logits, y_org)
