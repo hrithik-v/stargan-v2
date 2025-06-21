@@ -53,7 +53,7 @@ class Solver(nn.Module):
 
         # Initialize wandb
         wandb.login(key=args.wandb_api_token)
-        wandb.init(project="starganv2", name=args.wandb_name,
+        wandb.init(project="weatherGAN", name=args.wandb_name,
         id=args.wandb_id, 
         resume= "allow" if args.wandb_resume else None, 
         config=vars(args)
@@ -87,8 +87,9 @@ class Solver(nn.Module):
                     betas=[args.beta1, args.beta2],
                     weight_decay=args.weight_decay)
 
+            nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module)}
             self.ckptios = [
-                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **self.nets),
+                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **nets_to_save),
                 # CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
         else:
@@ -236,7 +237,8 @@ class Solver(nn.Module):
 
             # Save latest checkpoints every 100 iterations
             if (i+1) % 100 == 0:
-                latest_ckpt_nets = CheckpointIO(ospj(args.checkpoint_dir, 'latest_nets.ckpt'), data_parallel=True, **self.nets)
+                nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module)}
+                latest_ckpt_nets = CheckpointIO(ospj(args.checkpoint_dir, 'latest_nets.ckpt'), data_parallel=True, **nets_to_save)
                 latest_ckpt_optims = CheckpointIO(ospj(args.checkpoint_dir, 'latest_optims.ckpt'), **self.optims)
                 latest_ckpt_nets.save(step=i+1)
                 latest_ckpt_optims.save(step=i+1)

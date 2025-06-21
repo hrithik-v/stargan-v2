@@ -197,13 +197,14 @@ class Generator(nn.Module):
         self.to_glo     = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in, 3, 1)
+            nn.Conv2d(dim_in, 3, 1),
+            nn.Tanh()
         )
 
         # Build hourglass down/up structure
         repeat = int(math.log2(img_size)) - 4
-        if w_hpf > 0:
-            repeat += 1
+        # if w_hpf > 0:
+            # repeat += 1
 
         enc_channels = dim_in
         for _ in range(repeat):
@@ -236,7 +237,7 @@ class Generator(nn.Module):
             enc_channels = dim_out
 
         # 6) Bottleneck (no spatial change)
-        for _ in range(2):
+        for _ in range(1):
             self.encode.append(
                 ResBlk(enc_channels, enc_channels, normalize=True)
             )
@@ -255,7 +256,10 @@ class Generator(nn.Module):
 
         # 7) Classification head
         self.class_pool = nn.AdaptiveAvgPool2d(1)
-        self.to_cls     = nn.Linear(enc_channels, num_domains)
+        self.to_cls     = nn.Sequential(
+            nn.LayerNorm(enc_channels),
+            nn.Linear(enc_channels, num_domains)
+        )
 
         # 8) Optional high‐pass filter
         if w_hpf > 0:
