@@ -20,10 +20,15 @@ STYLE_DIM = 64
 MAX_CONV_DIM = 512
 HIDDEN_DIM = 512
 
-EXPR_NAME = 'perce_base' 
-CKPT_NO = '006300' 
+EXPR_NAME = 'First_Run' 
+CKPT_NO = '003000' 
+USE_EMA = False  # Use EMA weights for better quality
 
-CHECKPOINT_PATH = f'expr/checkpoints/{EXPR_NAME}/{CKPT_NO}_nets.ckpt'
+if USE_EMA:
+    CHECKPOINT_PATH = f'expr/checkpoints/{EXPR_NAME}/{CKPT_NO}_nets_ema.ckpt'
+else:
+    CHECKPOINT_PATH = f'expr/checkpoints/{EXPR_NAME}/{CKPT_NO}_nets.ckpt'
+
 OUT_PATH = f'samples/{EXPR_NAME}/{CKPT_NO}.png'
 SRC_DIR = '/kaggle/input/five-weather-23k'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -48,12 +53,16 @@ class Args:
     style_dim = STYLE_DIM
     max_conv_dim = MAX_CONV_DIM
     w_hpf = 1.0
-    ema = False
+    ema = USE_EMA
     wing_path = ''
     hidden_dim = HIDDEN_DIM
+    seg_classes = 7
 args = Args()
 
-nets, _ = build_model(args)
+nets, nets_ema = build_model(args)
+
+if USE_EMA:
+    nets = nets_ema
 
 # Move models to device
 nets.generator.to(DEVICE)
@@ -107,10 +116,12 @@ with torch.no_grad():
             z = torch.randn(1, LATENT_DIM).to(DEVICE)
             s_trg = nets.mapping_network(z, y)
             out = nets.generator(x, s_trg)
-            row.append(denormalize(out[0].cpu()))
+            row.append(denormalize(out[0][0].cpu()))
         results.append(torch.stack(row))
 
 # --------- SAVE OUTPUT ---------
 grid = make_grid(torch.cat(results, dim=0), nrow=NUM_DOMAINS + 1, padding=2)
+if not os.path.exists(os.path.dirname(OUT_PATH)):
+    os.makedirs(os.path.dirname(OUT_PATH))
 save_image(grid, OUT_PATH)
 print(f"Saved inference results to {OUT_PATH}")

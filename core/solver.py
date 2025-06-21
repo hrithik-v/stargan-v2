@@ -148,6 +148,8 @@ class Solver(nn.Module):
 
         scaler = torch.amp.GradScaler('cuda')  # for mixed precision
 
+        # torch.autograd.set_detect_anomaly(True)
+
         for i in range(args.resume_iter, args.total_iters):
             # fetch images and labels
             inputs = next(fetcher)
@@ -158,23 +160,30 @@ class Solver(nn.Module):
             masks = None # nets.fan.get_heatmap(x_real) if args.w_hpf > 0 else None
 
             # train the discriminator
+            # print("Training Discriminator latent...")
             with torch.amp.autocast('cuda'):
                 d_loss, d_losses_latent = compute_d_loss(
                     nets, args, x_real, y_org, y_trg, z_trg=z_trg, masks=masks)
             self._reset_grad()
             scaler.scale(d_loss).backward()
+            scaler.unscale_(optims.discriminator)
+            torch.nn.utils.clip_grad_norm_(nets.discriminator.parameters(), 1.0)
             scaler.step(optims.discriminator)
             scaler.update()
 
+            # print("Training Discriminator reference...")
             with torch.amp.autocast('cuda'):
                 d_loss, d_losses_ref = compute_d_loss(
                     nets, args, x_real, y_org, y_trg, x_ref=x_ref, masks=masks)
             self._reset_grad()
             scaler.scale(d_loss).backward()
+            scaler.unscale_(optims.discriminator)
+            torch.nn.utils.clip_grad_norm_(nets.discriminator.parameters(), 1.0)
             scaler.step(optims.discriminator)
             scaler.update()
 
             # train the generator
+            # print("Training Generator latent...")
             with torch.amp.autocast('cuda'):
                 # include segmentation ground-truth masks
                 seg_gt = inputs.get('seg_gt', None)
@@ -183,11 +192,18 @@ class Solver(nn.Module):
                     z_trgs=[z_trg, z_trg2], masks=masks, seg_gt=seg_gt)
             self._reset_grad()
             scaler.scale(g_loss).backward()
+            scaler.unscale_(optims.generator)
+            scaler.unscale_(optims.mapping_network)
+            scaler.unscale_(optims.style_encoder)
+            torch.nn.utils.clip_grad_norm_(nets.generator.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(nets.mapping_network.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(nets.style_encoder.parameters(), 1.0)
             scaler.step(optims.generator)
             scaler.step(optims.mapping_network)
             scaler.step(optims.style_encoder)
             scaler.update()
 
+            # print("Training Generator reference...")
             with torch.amp.autocast('cuda'):
                 # include segmentation masks for reference mode if available
                 seg_gt = inputs.get('seg_gt', None)
@@ -196,6 +212,8 @@ class Solver(nn.Module):
                     x_refs=[x_ref, x_ref2], masks=masks, seg_gt=seg_gt)
             self._reset_grad()
             scaler.scale(g_loss).backward()
+            scaler.unscale_(optims.generator)
+            torch.nn.utils.clip_grad_norm_(nets.generator.parameters(), 1.0)
             scaler.step(optims.generator)
             scaler.update()
 
