@@ -1,6 +1,6 @@
 """
 StarGAN v2 Inference Script (Latent-Guided)
-Translates 7 random images into 5 target domains using the mapping network.
+Translates a specified number of random images into target domains using the mapping network.
 """
 import os
 import random
@@ -19,9 +19,10 @@ LATENT_DIM = 16
 STYLE_DIM = 64
 MAX_CONV_DIM = 512
 HIDDEN_DIM = 512
+NUM_SAMPLES = 15
 
-EXPR_NAME = 'First_Run' 
-CKPT_NO = '003000' 
+EXPR_NAME = 'Fourth_Run' 
+CKPT_NO = '007800' 
 USE_EMA = False  # Use EMA weights for better quality
 
 if USE_EMA:
@@ -100,7 +101,7 @@ for class_name in os.listdir(SRC_DIR):
             img_labels.append(int(class_name))
 
 # Randomly sample 7 images
-sampled = random.sample(list(zip(img_files, img_labels)), 15)
+sampled = random.sample(list(zip(img_files, img_labels)), NUM_SAMPLES)
 sampled_files, sampled_labels = zip(*sampled)
 imgs = [transform(Image.open(f).convert('RGB')) for f in sampled_files]
 imgs = torch.stack(imgs).to(DEVICE)
@@ -108,7 +109,7 @@ imgs = torch.stack(imgs).to(DEVICE)
 # --------- INFERENCE ---------
 results = []
 with torch.no_grad():
-    for i in range(15):
+    for i in range(NUM_SAMPLES):
         row = [denormalize(imgs[i].cpu())]  # Start with original
         x = imgs[i].unsqueeze(0)
         for y_trg in range(NUM_DOMAINS):

@@ -7,8 +7,8 @@ This work is licensed under the Creative Commons Attribution-NonCommercial
 http://creativecommons.org/licenses/by-nc/4.0/ or send a letter to
 Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
 """
-import os
-os.environ["WANDB_MODE"] = "disabled"
+# import os
+# os.environ["WANDB_MODE"] = "disabled"
 
 import copy
 import math
@@ -128,9 +128,9 @@ class AdainResBlk(nn.Module):
 
     def _residual(self, x, s):
         # apply activation and upsample before modulated conv
-        x = self.actv(x)
         if self.upsample:
             x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = self.actv(x)
         x = self.conv1(x, s)
         x = self.actv(x)
         x = self.conv2(x, s)
@@ -183,12 +183,12 @@ class Generator(nn.Module):
         self.decode_seg = nn.ModuleList()
         self.to_seg     = nn.Conv2d(dim_in, seg_classes, 1)
 
-        # 4) Weather‐clue decoder
-        self.decode_clues = nn.ModuleList()
-        self.to_clues     = nn.Sequential(
-            nn.InstanceNorm2d(dim_in + seg_classes, affine=True),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(dim_in + seg_classes, 1, 1),
+        # 4) Weather‐clue decoder is removed. The mask will be generated from the segmentation map.
+        # The new to_clues network maps the segmentation output directly to a blending mask.
+        self.to_clues = nn.Sequential(
+            nn.Conv2d(seg_classes, 16, 3, 1, 1),
+            nn.ReLU(),
+            nn.Conv2d(16, 1, 1),
             nn.Sigmoid()
         )
 
@@ -222,11 +222,7 @@ class Generator(nn.Module):
                 nn.ReLU()
             ))
 
-            # c) Weather-clue decoder (mirroring encoder)
-            self.decode_clues.insert(0,
-                AdainResBlk(dim_out, enc_channels, style_dim,
-                            w_hpf=w_hpf, upsample=True)
-            )
+            # c) Weather-clue decoder (mirroring encoder) is removed.
 
             # d) Global decoder block (mirroring encoder)
             self.decode_glo.insert(0,
@@ -245,10 +241,7 @@ class Generator(nn.Module):
                 nn.Conv2d(enc_channels, enc_channels, 3, 1, 1),
                 nn.ReLU()
             ))
-            self.decode_clues.insert(0,
-                AdainResBlk(enc_channels, enc_channels, style_dim,
-                            w_hpf=w_hpf)
-            )
+            # The decode_clues bottleneck block is removed.
             self.decode_glo.insert(0,
                 AdainResBlk(enc_channels, enc_channels, style_dim,
                             w_hpf=w_hpf)
@@ -256,13 +249,17 @@ class Generator(nn.Module):
 
         # 7) Classification head
         self.class_pool = nn.AdaptiveAvgPool2d(1)
+        # A more robust classification head with a hidden layer and dropout
         self.to_cls     = nn.Sequential(
-            nn.LayerNorm(enc_channels),
-            nn.Linear(enc_channels, num_domains)
+            nn.Linear(enc_channels, enc_channels // 2),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(enc_channels // 2, num_domains)
         )
 
         # 8) Optional high‐pass filter
         if w_hpf > 0:
+          #model print(f'Using high-pass filter with weight {w_hpf}')
             device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.hpf = HighPass(w_hpf, device)
         else:
@@ -271,40 +268,44 @@ class Generator(nn.Module):
     def forward(self, x, style_code, masks=None, p=1.0):
         # ---- Encode ----
         feat = self.from_rgb(x)
+      #model print(f'Input shape: {feat.shape}, Max: {feat.max().item()}, Min: {feat.min().item()}')
         for block in self.encode:
             feat = block(feat)
-
+      #model print(f'Encoded feature shape: {feat.shape}, Max: {feat.max().item()}, Min: {feat.min().item()}')
         # ---- Classification ----
         cls_feat       = self.class_pool(feat).view(feat.size(0), -1)
+      #model print(f'Classification feature shape: {cls_feat.shape}, Max: {cls_feat.max().item()}, Min: {cls_feat.min().item()}')
         weather_logits = self.to_cls(cls_feat)
+      #model print(f'Weather logits shape: {weather_logits.shape}, Max: {weather_logits.max().item()}, Min: {weather_logits.min().item()}')
 
         # ---- Segmentation Decode ----
         seg_logits = feat
         for blk in self.decode_seg:
             seg_logits = blk(seg_logits)
+      #model print(f'Segmentation logits shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
         seg_logits = self.to_seg(seg_logits)
+      #model print(f'Segmentation logits after to_seg shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
 
-        # b) Weather-clue decoder
-        clues_feat = feat
-        for blk in self.decode_clues:
-            clues_feat = blk(clues_feat, style_code)
-
-        # Combine segmentation map and clue features
-        combined_feat = torch.cat([clues_feat, seg_logits], dim=1)
-        clues_logits = self.to_clues(combined_feat)
+        # The weather-clue decoder branch is removed.
+        # The clue mask is now generated directly from the segmentation logits.
+        clues_logits = self.to_clues(seg_logits.detach()) # Use detach to prevent style path from backpropping into seg path
 
         # c) Global feature decoder
         glo_feat = feat
         for blk in self.decode_glo:
             glo_feat = blk(glo_feat, style_code)
+      #model print(f'Global feature shape: {glo_feat.shape}, Max: {glo_feat.max().item()}, Min: {glo_feat.min().item()}')
         glo = self.to_glo(glo_feat)  # (B,3,H,W)
+      #model print(f'Global output shape: {glo.shape}, Max: {glo.max().item()}, Min: {glo.min().item()}')
 
         # ---- Blend & Return ----
         # expand mask to 3 channels
         if clues_logits.shape[1] == 1:
             clues_logits = clues_logits.expand(-1, 3, -1, -1)
+        print(f'Clue logits== Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}')
+      #model print(f"Clue logits shape after expand: {clues_logits.shape}, Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}")
         out = clues_logits * glo + (1 - clues_logits) * x
-
+      #model print(f'Output shape: {out.shape}, Max: {out.max().item()}, Min: {out.min().item()}')
         return out, seg_logits, weather_logits
 
 
@@ -341,6 +342,7 @@ class MappingNetwork(nn.Module):
         p: intensity factor for interpolation
         """
         h = self.shared(z)
+      #model print(f"h shape: {h.shape}, Max: {h.max().item()}, Min: {h.min().item()}")
         styles = []
         for layer in self.unshared:
             styles.append(layer(h))
@@ -352,6 +354,7 @@ class MappingNetwork(nn.Module):
         w_i = styles[idx, y]  # (batch, style_dim)
         # Interpolate with intensity p
         w = mean_style + p * (w_i - mean_style)
+      #model print(f"w shape: {w.shape}, Max: {w.max().item()}, Min: {w.min().item()}")
         return w
 
 
@@ -365,7 +368,7 @@ class StyleEncoder(nn.Module):
         repeat_num = int(np.log2(img_size)) - 2
         for _ in range(repeat_num):
             dim_out = min(dim_in*2, max_conv_dim)
-            blocks += [ResBlk(dim_in, dim_out, downsample=True)]
+            blocks += [ResBlk(dim_in, dim_out, normalize=True, downsample=True)]
             dim_in = dim_out
 
         blocks += [nn.LeakyReLU(0.2)]
@@ -378,7 +381,9 @@ class StyleEncoder(nn.Module):
             self.unshared += [nn.Linear(dim_out, style_dim)]
 
     def forward(self, x, y):
+      #model print(f'StyleEncoder input shape: {x.shape}, Max: {x.max().item()}, Min: {x.min().item()}')
         h = self.shared(x)
+      #model print(f'StyleEncoder shared output shape: {h.shape}, Max: {h.max().item()}, Min: {h.min().item()}')
         h = h.view(h.size(0), -1)
         out = []
         for layer in self.unshared:
@@ -386,6 +391,7 @@ class StyleEncoder(nn.Module):
         out = torch.stack(out, dim=1)  # (batch, num_domains, style_dim)
         idx = torch.LongTensor(range(y.size(0))).to(y.device)
         s = out[idx, y]  # (batch, style_dim)
+      #model print(f'StyleEncoder output shape: {s.shape}, Max: {s.max().item()}, Min: {s.min().item()}')
         return s
 
 
@@ -410,7 +416,9 @@ class Discriminator(nn.Module):
 
     def forward(self, x, y):
         out = self.main(x)
+      #model print(f'Discriminator output shape: {out.shape}, Max: {out.max().item()}, Min: {out.min().item()}')
         out = out.view(out.size(0), -1)  # (batch, num_domains)
+
         idx = torch.LongTensor(range(y.size(0))).to(y.device)
         out = out[idx, y]  # (batch)
         return out
@@ -428,7 +436,7 @@ def build_model(args):
     # mapping_network_ema = copy.deepcopy(mapping_network)
     # style_encoder_ema = copy.deepcopy(style_encoder)
 
-    print(generator)
+    # print(generator)
 
     nets = Munch(generator=generator,
                  mapping_network=mapping_network,

@@ -114,14 +114,12 @@ if __name__ == '__main__':
 
 
     # weight for objective functions
-    parser.add_argument('--lambda_seg', type=float, default=20)
-    parser.add_argument('--lambda_inv', type=float, default=1)
-    parser.add_argument('--lambda_reg', type=float, default=10)
-    parser.add_argument('--lambda_cyc', type=float, default=10)
-    parser.add_argument('--lambda_sty', type=float, default=1,
-                        help='Weight for style reconstruction loss')
-    parser.add_argument('--lambda_ds', type=float, default=1,
-                        help='Weight for diversity sensitive loss')
+    parser.add_argument('--lambda_seg', type=float, default=1.0)        # originally 10
+    parser.add_argument('--lambda_inv', type=float, default=1.0) 
+    parser.add_argument('--lambda_reg', type=float, default=1.0)        # Not mentioned directly; rename or keep if needed
+    parser.add_argument('--lambda_cyc', type=float, default=1.0)        # originally 10
+    parser.add_argument('--lambda_sty', type=float, default=1.0)        # Optional, paper uses style reconstruction (implied in StarGAN v2)
+    parser.add_argument('--lambda_ds', type=float, default=1.0)         # Originally 5, set to 1 to match λ_wd
     parser.add_argument('--ds_iter', type=int, default=100000,
                         help='Number of iterations to optimize diversity sensitive loss')
     parser.add_argument('--w_hpf', type=float, default=1,
@@ -161,11 +159,11 @@ if __name__ == '__main__':
                         help='Seed for random number generator')
 
     # directory for training
-    parser.add_argument('--train_img_dir', type=str, default='/kaggle/input/five-weather-23k',
+    parser.add_argument('--train_img_dir', type=str, default='/kaggle/input/five-weather-23k/images',
                         help='Directory containing training images')
-    parser.add_argument('--val_img_dir', type=str, default='/kaggle/input/five-weather-23k',
+    parser.add_argument('--val_img_dir', type=str, default='/kaggle/input/five-weather-23k/images',
                         help='Directory containing validation images')
-    parser.add_argument('--seg_dir', type=str, default='/kaggle/working/seg_masks')
+    parser.add_argument('--seg_dir', type=str, default='/kaggle/input/five-weather-23k/masks')
     parser.add_argument('--sample_dir', type=str, default='expr/samples',
                         help='Directory for saving generated images')
     parser.add_argument('--checkpoint_dir', type=str, default='expr/checkpoints',

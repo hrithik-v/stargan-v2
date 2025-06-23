@@ -87,11 +87,14 @@ class Solver(nn.Module):
                     betas=[args.beta1, args.beta2],
                     weight_decay=args.weight_decay)
 
-            nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module)}
+            self.scaler = torch.amp.GradScaler('cuda')
+
+            nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module) and name != 'percep'}
+            optims_and_scaler = {**self.optims, 'scaler': self.scaler}
             self.ckptios = [
                 CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets.ckpt'), data_parallel=True, **nets_to_save),
                 # CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema),
-                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **self.optims)]
+                CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_optims.ckpt'), **optims_and_scaler)]
         else:
             self.ckptios = [CheckpointIO(ospj(args.checkpoint_dir, '{:06d}_nets_ema.ckpt'), data_parallel=True, **self.nets_ema)]
 
@@ -130,6 +133,7 @@ class Solver(nn.Module):
         nets = self.nets
         nets_ema = self.nets_ema  # use EMA nets for eval
         optims = self.optims
+        scaler = self.scaler
 
         # fetch random validation images for debugging
         fetcher = InputFetcher(loaders.src, loaders.ref, args.latent_dim, 'train')
@@ -145,10 +149,6 @@ class Solver(nn.Module):
 
         print('Start training...')
         start_time = time.time()
-
-        scaler = torch.amp.GradScaler('cuda')  # for mixed precision
-
-        # torch.autograd.set_detect_anomaly(True)
 
         for i in range(args.resume_iter, args.total_iters):
             # fetch images and labels
@@ -255,9 +255,10 @@ class Solver(nn.Module):
 
             # Save latest checkpoints every 100 iterations
             if (i+1) % 100 == 0:
-                nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module)}
+                nets_to_save = {name: module for name, module in self.nets.items() if isinstance(module, nn.Module) and name != 'percep'}
+                optims_and_scaler = {**self.optims, 'scaler': self.scaler}
                 latest_ckpt_nets = CheckpointIO(ospj(args.checkpoint_dir, 'latest_nets.ckpt'), data_parallel=True, **nets_to_save)
-                latest_ckpt_optims = CheckpointIO(ospj(args.checkpoint_dir, 'latest_optims.ckpt'), **self.optims)
+                latest_ckpt_optims = CheckpointIO(ospj(args.checkpoint_dir, 'latest_optims.ckpt'), **optims_and_scaler)
                 latest_ckpt_nets.save(step=i+1)
                 latest_ckpt_optims.save(step=i+1)
 
