@@ -310,8 +310,7 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
         else:  # x_ref is not None
             s_trg = nets.style_encoder(x_ref, y_trg)
 
-        x_fake, _seg, _cls = nets.generator(x_real, s_trg, masks=masks)
-
+        x_fake, _, _, _ = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
     loss_fake = adv_loss(out, 0)
 
@@ -321,22 +320,17 @@ def compute_d_loss(nets, args, x_real, y_org, y_trg, z_trg=None, x_ref=None, mas
                        reg=loss_reg.item())
 
 
-
 def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, masks=None, seg_gt=None):
     assert (z_trgs is None) != (x_refs is None)
     if z_trgs is not None:
-        z_trg, z_trg2 = z_trgs
-    if x_refs is not None:
-        x_ref, x_ref2 = x_refs
-
-    # adversarial loss
-    if z_trgs is not None:
-        s_trg = nets.mapping_network(z_trg, y_trg)
+        s_trg = nets.mapping_network(z_trgs[0], y_trg)
+        s_trg2 = nets.mapping_network(z_trgs[1], y_trg)
     else:
-        s_trg = nets.style_encoder(x_ref, y_trg)
+        s_trg = nets.style_encoder(x_refs[0], y_trg)
+        s_trg2 = nets.style_encoder(x_refs[1], y_trg)
 
     # forward generator
-    x_fake, seg_pred, cls_logits = nets.generator(x_real, s_trg, masks=masks)
+    x_fake, seg_pred, cls_logits, clues_logits = nets.generator(x_real, s_trg, masks=masks)
     out = nets.discriminator(x_fake, y_trg)
     loss_adv = adv_loss(out, 1)
 
@@ -345,18 +339,19 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     loss_sty = torch.mean(torch.abs(s_pred - s_trg))
 
     # diversity sensitive loss
-    if z_trgs is not None:
-        s_trg2 = nets.mapping_network(z_trg2, y_trg)
-    else:
-        s_trg2 = nets.style_encoder(x_ref2, y_trg)
-    x_fake2, _seg2, _cls2 = nets.generator(x_real, s_trg2, masks=masks)
+    x_fake2, _, _, _ = nets.generator(x_real, s_trg2, masks=masks)
     x_fake2 = x_fake2.detach()
     loss_ds = torch.mean(torch.abs(x_fake - x_fake2))
+
+    # NEW: mask regularization loss to prevent it from collapsing to zero
+    # This encourages the average mask value to increase, forcing the `glo` path to be used.
+    lambda_mask = 1.0
+    loss_mask = -torch.mean(clues_logits)
 
     # cycle structural perceptual consistency (Eq.7): SSIM + perceptual VGG loss
     masks = None # nets.fan.get_heatmap(x_fake) if args.w_hpf > 0 else None
     s_org = nets.style_encoder(x_real, y_org)
-    x_rec, _seg_rec, _cls_rec = nets.generator(x_fake, s_org, masks=masks)
+    x_rec, _seg_rec, _cls_rec, _ = nets.generator(x_fake, s_org, masks=masks)
     # SSIM term between x and reconstructed image
     loss_cyc_ssim = 1 - nets.ssim(x_real, x_rec)
     # perceptual VGG term
@@ -364,10 +359,10 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     # total cycle loss
     loss_cyc = loss_cyc_ssim + loss_cyc_per
 
-    # weather-invariant consistency loss
-    loss_inv_ssim = 1 - nets.ssim(x_real, x_fake)
-    loss_inv_per = nets.percep(x_fake, x_real) if args.lambda_beta > 0 else 0
-    loss_inv = loss_inv_ssim + loss_inv_per
+    # weather-invariant consistency loss <------
+    # loss_inv_ssim = 1 - nets.ssim(x_real, x_fake)
+    # loss_inv_per = nets.percep(x_fake, x_real) if args.lambda_beta > 0 else 0
+    # loss_inv = loss_inv_ssim + loss_inv_per
 
     # segmentation and classification losses
     # weakly-supervised segmentation & classification losses (Eq.5)
@@ -379,24 +374,28 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
         loss_c = F.cross_entropy(cls_logits, y_org)
         loss_seg = loss_s + loss_c
     else:
+        print("MASK SKIPPED")
         loss_seg = 0
+        loss_c = 0
 
     # total generator loss
     loss = loss_adv \
         + args.lambda_sty * loss_sty \
         - args.lambda_ds * loss_ds \
         + args.lambda_cyc * loss_cyc \
-        + args.lambda_inv * loss_inv \
-        + args.lambda_seg * loss_seg
+        + args.lambda_seg * loss_seg \
+        + lambda_mask * loss_mask
 
+        # + args.lambda_inv * loss_inv \
     return loss, Munch(
          adv=loss_adv.item(),
          sty=loss_sty.item(),
          ds=loss_ds.item(),
          cyc=loss_cyc.item(),
-         inv=loss_inv.item(),
-         seg=loss_seg.item(),
-         cls=loss_c.item()
+        #  inv=loss_inv if isinstance(loss_inv, float) else loss_inv.item(),
+         seg=loss_seg.item() if torch.is_tensor(loss_seg) else loss_seg,
+         cls=loss_c.item() if torch.is_tensor(loss_c) else loss_c,
+         mask=loss_mask.item()
      )
 
 

@@ -154,12 +154,6 @@ class HighPass(nn.Module):
         return F.conv2d(x, filter, padding=1, groups=x.size(1))
 
 
-# -------------------------------------------------------------------
-# Assumes you have these blocks defined exactly as in StarGAN v2:
-#   - ResBlk(in_c, out_c, normalize: bool, downsample: bool=False)
-#   - AdainResBlk(in_c, out_c, style_dim, w_hpf=0, upsample: bool=False)
-#   - HighPass(w_hpf, device)
-# -------------------------------------------------------------------
 
 class Generator(nn.Module):
     def __init__(
@@ -185,10 +179,11 @@ class Generator(nn.Module):
 
         # 4) Weather‐clue decoder is removed. The mask will be generated from the segmentation map.
         # The new to_clues network maps the segmentation output directly to a blending mask.
+        # It is now conditioned on the style_code to be aware of the target domain.
         self.to_clues = nn.Sequential(
-            nn.Conv2d(seg_classes, 16, 3, 1, 1),
+            nn.Conv2d(seg_classes + style_dim, 64, 3, 1, 1), # Input channels updated
             nn.ReLU(),
-            nn.Conv2d(16, 1, 1),
+            nn.Conv2d(64, 1, 1),
             nn.Sigmoid()
         )
 
@@ -287,8 +282,10 @@ class Generator(nn.Module):
       #model print(f'Segmentation logits after to_seg shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
 
         # The weather-clue decoder branch is removed.
-        # The clue mask is now generated directly from the segmentation logits.
-        clues_logits = self.to_clues(seg_logits.detach()) # Use detach to prevent style path from backpropping into seg path
+        # The clue mask is now generated directly from the segmentation logits AND the style code.
+        style_code_map = style_code.unsqueeze(2).unsqueeze(3).expand(-1, -1, seg_logits.size(2), seg_logits.size(3))
+        clues_input = torch.cat([seg_logits.detach(), style_code_map], dim=1)
+        raw_clues_logits = self.to_clues(clues_input)
 
         # c) Global feature decoder
         glo_feat = feat
@@ -300,13 +297,14 @@ class Generator(nn.Module):
 
         # ---- Blend & Return ----
         # expand mask to 3 channels
+        clues_logits = raw_clues_logits
         if clues_logits.shape[1] == 1:
             clues_logits = clues_logits.expand(-1, 3, -1, -1)
-        print(f'Clue logits== Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}')
+        # print(f'Clue logits==Shape: {clues_logits.shape} Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}')
       #model print(f"Clue logits shape after expand: {clues_logits.shape}, Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}")
         out = clues_logits * glo + (1 - clues_logits) * x
       #model print(f'Output shape: {out.shape}, Max: {out.max().item()}, Min: {out.min().item()}')
-        return out, seg_logits, weather_logits
+        return out, seg_logits, weather_logits, raw_clues_logits
 
 
 
