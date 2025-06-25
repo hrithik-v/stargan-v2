@@ -31,8 +31,25 @@ def listdir(dname):
 
 
 class DefaultDataset(ImageFolder):
-    def __init__(self, root, mask_root=None, transform=None, transform_mask=None):
+    def __init__(self, root, mask_root=None, transform=None, transform_mask=None, max_per_class=None):
         super().__init__(root, transform=None)
+        if max_per_class is not None:
+            print('Limiting number of images per class...')
+            samples_by_class = {}
+            for path, target in self.samples:
+                if target not in samples_by_class:
+                    samples_by_class[target] = []
+                samples_by_class[target].append((path, target))
+
+            new_samples = []
+            for target in sorted(samples_by_class.keys()):
+                samples = samples_by_class[target]
+                if len(samples) > max_per_class:
+                    samples = random.sample(samples, max_per_class)
+                new_samples.extend(samples)
+            self.samples = new_samples
+            self.targets = [s[1] for s in self.samples]
+
         self.transform = transform
         self.transform_mask = transform_mask
         self.mask_root = mask_root
@@ -68,16 +85,18 @@ class DefaultDataset(ImageFolder):
 
 
 class ReferenceDataset(data.Dataset):
-    def __init__(self, root, transform=None):
-        self.samples, self.targets = self._make_dataset(root)
+    def __init__(self, root, transform=None, max_per_class=None):
+        self.samples, self.targets = self._make_dataset(root, max_per_class)
         self.transform = transform
 
-    def _make_dataset(self, root):
+    def _make_dataset(self, root, max_per_class=None):
         domains = os.listdir(root)
         fnames, fnames2, labels = [], [], []
         for idx, domain in enumerate(sorted(domains)):
             class_dir = os.path.join(root, domain)
             cls_fnames = listdir(class_dir)
+            if max_per_class is not None and len(cls_fnames) > max_per_class:
+                cls_fnames = random.sample(cls_fnames, max_per_class)
             fnames += cls_fnames
             fnames2 += random.sample(cls_fnames, len(cls_fnames))
             labels += [idx] * len(cls_fnames)
@@ -128,10 +147,10 @@ def get_train_loader(img_root, mask_root=None, which='source', img_size=256,
     ])
 
     if which == 'source':
-        dataset = DefaultDataset(img_root, mask_root, transform=transform_img, transform_mask=transform_mask)
+        dataset = DefaultDataset(img_root, mask_root, transform=transform_img, transform_mask=transform_mask, max_per_class=max_per_class)
     elif which == 'reference':
         # Unpaired reference images without segmentation masks
-        dataset = ReferenceDataset(img_root, transform=transform_img)
+        dataset = ReferenceDataset(img_root, transform=transform_img, max_per_class=max_per_class)
     else:
         raise NotImplementedError(f"Unsupported loader type: {which}")
 

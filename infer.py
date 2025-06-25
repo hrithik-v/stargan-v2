@@ -19,10 +19,10 @@ LATENT_DIM = 16
 STYLE_DIM = 64
 MAX_CONV_DIM = 512
 HIDDEN_DIM = 512
-NUM_SAMPLES = 15
+NUM_SAMPLES = 5
 
-EXPR_NAME = 'Fourth_Run' 
-CKPT_NO = '007800' 
+EXPR_NAME = 'Eight_Run' 
+CKPT_NO = 'latest' 
 USE_EMA = False  # Use EMA weights for better quality
 
 if USE_EMA:
@@ -31,7 +31,7 @@ else:
     CHECKPOINT_PATH = f'expr/checkpoints/{EXPR_NAME}/{CKPT_NO}_nets.ckpt'
 
 OUT_PATH = f'samples/{EXPR_NAME}/{CKPT_NO}.png'
-SRC_DIR = '/kaggle/input/five-weather-23k'
+SRC_DIR = '/kaggle/input/five-weather-23k-with-masks/images'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SEED = 42
 

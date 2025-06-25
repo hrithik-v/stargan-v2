@@ -179,13 +179,9 @@ class Generator(nn.Module):
 
         # 4) Weather‐clue decoder is removed. The mask will be generated from the segmentation map.
         # The new to_clues network maps the segmentation output directly to a blending mask.
-        # It is now conditioned on the style_code to be aware of the target domain.
-        self.to_clues = nn.Sequential(
-            nn.Conv2d(seg_classes + style_dim, 64, 3, 1, 1), # Input channels updated
-            nn.ReLU(),
-            nn.Conv2d(64, 1, 1),
-            nn.Sigmoid()
-        )
+        # It is now conditioned on the style_code using AdaIN, similar to the global decoder.
+        self.to_clues = AdainResBlk(seg_classes, 64, style_dim, w_hpf=0)
+        self.to_mask = nn.Sequential(nn.Conv2d(64, 1, 1), nn.Sigmoid())
 
         # 5) Global‐image decoder
         self.decode_glo = nn.ModuleList()
@@ -282,10 +278,9 @@ class Generator(nn.Module):
       #model print(f'Segmentation logits after to_seg shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
 
         # The weather-clue decoder branch is removed.
-        # The clue mask is now generated directly from the segmentation logits AND the style code.
-        style_code_map = style_code.unsqueeze(2).unsqueeze(3).expand(-1, -1, seg_logits.size(2), seg_logits.size(3))
-        clues_input = torch.cat([seg_logits.detach(), style_code_map], dim=1)
-        raw_clues_logits = self.to_clues(clues_input)
+        # The clue mask is now generated directly from the segmentation logits and the style code, using AdaIN.
+        clues_feat = self.to_clues(seg_logits.detach(), style_code)
+        raw_clues_logits = self.to_mask(clues_feat)
 
         # c) Global feature decoder
         glo_feat = feat
