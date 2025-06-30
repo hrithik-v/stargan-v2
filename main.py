@@ -117,9 +117,10 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_seg', type=float, default=1.0)        # originally 10
     parser.add_argument('--lambda_inv', type=float, default=0.0) # <----
     parser.add_argument('--lambda_reg', type=float, default=1.0)        # Not mentioned directly; rename or keep if needed
-    parser.add_argument('--lambda_cyc', type=float, default=1.0)        # originally 10
-    parser.add_argument('--lambda_sty', type=float, default=1.0)        # Optional, paper uses style reconstruction (implied in StarGAN v2)
-    parser.add_argument('--lambda_ds', type=float, default=1.0)         # Originally 5, set to 1 to match λ_wd
+    parser.add_argument('--lambda_cyc', type=float, default=3.0)        # originally 10
+    parser.add_argument('--lambda_sty', type=float, default=2.0)        # Optional, paper uses style reconstruction (implied in StarGAN v2)
+    parser.add_argument('--lambda_ds', type=float, default=1)         # Originally 5, set to 1 to match λ_wd
+    parser.add_argument('--lambda_mask', type=float, default=0.1)         # Originally 5, set to 1 to match λ_wd
     parser.add_argument('--ds_iter', type=int, default=100000,
                         help='Number of iterations to optimize diversity sensitive loss')
     parser.add_argument('--w_hpf', type=float, default=1,

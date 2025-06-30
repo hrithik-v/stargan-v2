@@ -19,9 +19,9 @@ LATENT_DIM = 16
 STYLE_DIM = 64
 MAX_CONV_DIM = 512
 HIDDEN_DIM = 512
-NUM_SAMPLES = 5
+NUM_SAMPLES = 7
 
-EXPR_NAME = 'Eight_Run' 
+EXPR_NAME = '10th_Run' 
 CKPT_NO = 'latest' 
 USE_EMA = False  # Use EMA weights for better quality
 

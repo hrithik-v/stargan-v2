@@ -18,58 +18,48 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F  # ensure functional alias is present
-
+from torch.nn.utils import spectral_norm
 from core.wing import FAN
 
 
 # Add weight demodulation modulated convolution class
 class ModulatedConv2d(nn.Module):
-    """
-    Conv2d layer with style-based weight modulation and demodulation (weight demodulation).
-    """
-    def __init__(self, in_channel, out_channel, kernel_size, style_dim, demodulate=True, eps=1e-8):
+    def __init__(self, in_ch, out_ch, kernel_size, style_dim, demodulate=True):
         super().__init__()
-        self.eps = eps
+        self.eps = 1e-8
         self.demodulate = demodulate
-        # weight shape: [1, out_channel, in_channel, k, k]
-        self.weight = nn.Parameter(torch.randn(1, out_channel, in_channel, kernel_size, kernel_size))
-        # mapping from style vector to modulation scale
-        self.modulation = nn.Linear(style_dim, in_channel)
-        # store channel dims
-        self.in_channel = in_channel
-        self.out_channel = out_channel
-        self.kernel_size = kernel_size
-
+        self.weight = nn.Parameter(torch.randn(1, out_ch, in_ch, kernel_size, kernel_size))
+        self.modulation = nn.Linear(style_dim, in_ch)
+        nn.init.kaiming_normal_(self.weight, a=0.2, mode='fan_in')
+        
     def forward(self, x, style):
-        # batch, in_c, h, w from input
-        batch, in_c, h, w = x.shape
-        # compute style modulation and reshape using local in_c
-        style = self.modulation(style).view(batch, 1, in_c, 1, 1)
-        # modulate weights
-        weight = self.weight * style  # (batch, out_c, in_c, k, k)
-        # weight demodulation
+        b, c, h, w = x.shape
+        style = self.modulation(style).view(b, 1, c, 1, 1) + 1  # [-1,1] -> [0,2]
+        
+        # Modulate weights
+        weight = self.weight * style
         if self.demodulate:
-            demod = torch.rsqrt((weight * weight).sum([2, 3, 4]) + self.eps)
-            weight = weight * demod.view(batch, self.out_channel, 1, 1, 1)
-        # reshape for grouped convolution
-        weight = weight.view(batch * self.out_channel, in_c, self.kernel_size, self.kernel_size)
-        x = x.view(1, batch * in_c, h, w)
-        out = F.conv2d(x, weight, padding=self.kernel_size // 2, groups=batch)
-        # reshape back to (batch, out_c, h, w)
-        return out.view(batch, self.out_channel, h, w)
+            d = torch.rsqrt(weight.pow(2).sum([2,3,4]) + self.eps)
+            weight = weight * d.view(b, -1, 1, 1, 1)
+        
+        # Grouped convolution
+        x = x.view(1, b*c, h, w)
+        weight = weight.view(b*self.weight.size(1), *self.weight.shape[2:])
+        out = F.conv2d(x, weight, padding=self.weight.size(-1)//2, groups=b)
+        return out.view(b, -1, h, w)
 
 
 class ResBlk(nn.Module):
     def __init__(self, dim_in, dim_out, actv=nn.LeakyReLU(0.2),
-                 normalize=False, downsample=False):
+                 normalize=False, downsample=False, use_spectral_norm=False):
         super().__init__()
         self.actv = actv
         self.normalize = normalize
         self.downsample = downsample
         self.learned_sc = dim_in != dim_out
-        self._build_weights(dim_in, dim_out)
+        self._build_weights(dim_in, dim_out, use_spectral_norm)
 
-    def _build_weights(self, dim_in, dim_out):
+    def _build_weights(self, dim_in, dim_out, use_spectral_norm):
         self.conv1 = nn.Conv2d(dim_in, dim_in, 3, 1, 1)
         self.conv2 = nn.Conv2d(dim_in, dim_out, 3, 1, 1)
         if self.normalize:
@@ -77,6 +67,11 @@ class ResBlk(nn.Module):
             self.norm2 = nn.InstanceNorm2d(dim_in, affine=True)
         if self.learned_sc:
             self.conv1x1 = nn.Conv2d(dim_in, dim_out, 1, 1, 0, bias=False)
+        if use_spectral_norm:
+            self.conv1 = spectral_norm(self.conv1)
+            self.conv2 = spectral_norm(self.conv2)
+            if self.learned_sc:
+                self.conv1x1 = spectral_norm(self.conv1x1)
 
     def _shortcut(self, x):
         if self.learned_sc:
@@ -103,206 +98,212 @@ class ResBlk(nn.Module):
         return x / math.sqrt(2)  # unit variance
 
 
-class AdainResBlk(nn.Module):
-    def __init__(self, dim_in, dim_out, style_dim=64, w_hpf=0,
-                 actv=nn.LeakyReLU(0.2), upsample=False):
-        super().__init__()
-        self.actv = actv
-        self.upsample = upsample
-        self.learned_sc = dim_in != dim_out
-        self._build_weights(dim_in, dim_out, style_dim)
+# Custom skip connection that ignores style
+class Skip(nn.Module):
+    def forward(self, x, s=None):
+        return x
 
-    def _build_weights(self, dim_in, dim_out, style_dim=64):
-        # Use modulated convolution with weight demodulation
+
+class AdainResBlk(nn.Module):
+    def __init__(self, dim_in, dim_out, style_dim, upsample=False):
+        super().__init__()
+        self.upsample = upsample
+        self.actv = nn.LeakyReLU(0.2)
+        
+        # Main path
         self.conv1 = ModulatedConv2d(dim_in, dim_out, 3, style_dim)
         self.conv2 = ModulatedConv2d(dim_out, dim_out, 3, style_dim)
-        if self.learned_sc:
-            self.conv1x1 = nn.Conv2d(dim_in, dim_out, 1, 1, 0, bias=False)
-
-    def _shortcut(self, x):
-        if self.upsample:
-            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        if self.learned_sc:
-            x = self.conv1x1(x)
-        return x
-
-    def _residual(self, x, s):
-        # apply activation and upsample before modulated conv
-        if self.upsample:
-            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = self.actv(x)
-        x = self.conv1(x, s)
-        x = self.actv(x)
-        x = self.conv2(x, s)
-        return x
+        
+        # Skip connection
+        if dim_in != dim_out or upsample:
+            self.skip = ModulatedConv2d(dim_in, dim_out, 1, style_dim)
+        else:
+            self.skip = Skip()
 
     def forward(self, x, s):
-        out = self._residual(x, s)
-        return (out + self._shortcut(x)) / math.sqrt(2)
-
-
+        residual = x
+        if self.upsample:
+            residual = F.interpolate(residual, scale_factor=2, mode='bilinear')
+            x = F.interpolate(x, scale_factor=2, mode='bilinear')
+        
+        x = self.conv1(self.actv(x), s)
+        x = self.conv2(self.actv(x), s)
+        
+        skip = self.skip(residual, s)
+        return (x + skip) / math.sqrt(2)
+    
 class HighPass(nn.Module):
-    def __init__(self, w_hpf, device):
-        super(HighPass, self).__init__()
-        self.register_buffer('filter',
-                             torch.tensor([[-1, -1, -1],
-                                           [-1, 8., -1],
-                                           [-1, -1, -1]]) / w_hpf)
-
+    def __init__(self, w_hpf):
+        super().__init__()
+        self.register_buffer('kernel', 
+                            torch.tensor([[-1, -1, -1],
+                                          [-1, 8, -1],
+                                          [-1, -1, -1]]) / w_hpf)
+    
     def forward(self, x):
-        filter = self.filter.unsqueeze(0).unsqueeze(1).repeat(x.size(1), 1, 1, 1)
-        return F.conv2d(x, filter, padding=1, groups=x.size(1))
+        kernel = self.kernel.expand(x.size(1), 1, 3, 3)
+        return F.conv2d(x, kernel, padding=1, groups=x.size(1))
 
 
 
 class Generator(nn.Module):
-    def __init__(
-        self,
-        img_size=256,
-        style_dim=64,
-        max_conv_dim=512,
-        w_hpf=1,
-        num_domains=5,
-        seg_classes=7,  # e.g. Ground, Structure, Sky, …
-    ):
+    def __init__(self, img_size=256, style_dim=64, max_conv_dim=512, 
+                 num_domains=5, seg_classes=5, w_hpf=1):
+        """
+        WeatherGAN Generator
+        Args:
+            img_size: Input image size (assumed square)
+            style_dim: Dimension of style vector
+            max_conv_dim: Maximum channels in convolutional layers
+            num_domains: Number of weather domains (classes)
+            seg_classes: Number of segmentation classes
+            w_hpf: High-pass filter weight (0 to disable)
+        """
         super().__init__()
-        # 1) Base channel count
-        dim_in = 2**14 // img_size  # e.g. 64 for 256x256
-
-        # 2) Shared Encoder
+        # Initial channel dimension (scales with image size)
+        dim_in = 2**14 // img_size
+        
+        # 1. Shared Encoder
         self.from_rgb = nn.Conv2d(3, dim_in, 3, 1, 1)
-        self.encode   = nn.ModuleList()
+        self.encoder = nn.ModuleList()
+        
+        # 2. Weather Segmentation Module (Domain-Invariant)
+        self.seg_decoder = nn.ModuleList()
+        self.to_seg = nn.Sequential(
+            nn.Conv2d(dim_in, seg_classes, 1),
+            nn.Softmax(dim=1)
+        )
 
-        # 3) Segmentation head
-        self.decode_seg = nn.ModuleList()
-        self.to_seg     = nn.Conv2d(dim_in, seg_classes, 1)
+        # 3. Weather Clues Module (Domain-Specific)
+        self.clue_processor = ClueProcessor(seg_classes, style_dim)
 
-        # 4) Weather‐clue decoder is removed. The mask will be generated from the segmentation map.
-        # The new to_clues network maps the segmentation output directly to a blending mask.
-        # It is now conditioned on the style_code using AdaIN, similar to the global decoder.
-        self.to_clues = AdainResBlk(seg_classes, 64, style_dim, w_hpf=0)
-        self.to_mask = nn.Sequential(nn.Conv2d(64, 1, 1), nn.Sigmoid())
-
-        # 5) Global‐image decoder
-        self.decode_glo = nn.ModuleList()
-        self.to_glo     = nn.Sequential(
+        # 4. Global Weather Translation Module (Domain-Specific)
+        self.global_decoder = nn.ModuleList()
+        self.to_rgb = nn.Sequential(
             nn.InstanceNorm2d(dim_in, affine=True),
             nn.LeakyReLU(0.2),
             nn.Conv2d(dim_in, 3, 1),
             nn.Tanh()
         )
-
-        # Build hourglass down/up structure
-        repeat = int(math.log2(img_size)) - 4
-        # if w_hpf > 0:
-            # repeat += 1
-
-        enc_channels = dim_in
-        for _ in range(repeat):
-            dim_out = min(enc_channels * 2, max_conv_dim)
-
-            # a) Encoder block
-            self.encode.append(
-                ResBlk(enc_channels, dim_out, normalize=True, downsample=True)
+        
+        # Build encoder/decoder blocks
+        repeat_num = int(math.log2(img_size)) - 2
+        channels = dim_in
+        
+        # Encoder and decoder blocks
+        for _ in range(repeat_num):
+            dim_out = min(channels * 2, max_conv_dim)
+            
+            # Encoder block (downsample)
+            self.encoder.append(
+                ResBlk(channels, dim_out, normalize=True, downsample=True)
             )
-
-            # b) Segmentation decoder (mirror)
-            self.decode_seg.insert(0, nn.Sequential(
+            
+            # Segmentation decoder block (upsample, no style)
+            self.seg_decoder.insert(0, nn.Sequential(
                 nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-                nn.Conv2d(dim_out, enc_channels, 3, 1, 1),
-                nn.ReLU()
+                nn.Conv2d(dim_out, channels, 3, 1, 1),
+                nn.InstanceNorm2d(channels, affine=True),
+                nn.LeakyReLU(0.2)
             ))
-
-            # c) Weather-clue decoder (mirroring encoder) is removed.
-
-            # d) Global decoder block (mirroring encoder)
-            self.decode_glo.insert(0,
-                AdainResBlk(dim_out, enc_channels, style_dim,
-                            w_hpf=w_hpf, upsample=True)
+            
+            # Global decoder block (upsample with style)
+            self.global_decoder.insert(0,
+                AdainResBlk(dim_out, channels, style_dim, upsample=True)
             )
-
-            enc_channels = dim_out
-
-        # 6) Bottleneck (no spatial change)
+            
+            channels = dim_out
+        
+        # Bottleneck blocks
         for _ in range(1):
-            self.encode.append(
-                ResBlk(enc_channels, enc_channels, normalize=True)
+            self.encoder.append(
+                ResBlk(channels, channels, normalize=True)
             )
-            self.decode_seg.insert(0, nn.Sequential(
-                nn.Conv2d(enc_channels, enc_channels, 3, 1, 1),
-                nn.ReLU()
-            ))
-            # The decode_clues bottleneck block is removed.
-            self.decode_glo.insert(0,
-                AdainResBlk(enc_channels, enc_channels, style_dim,
-                            w_hpf=w_hpf)
+            self.seg_decoder.insert(0,
+                nn.Sequential(
+                    nn.Conv2d(channels, channels, 3, 1, 1),
+                    nn.InstanceNorm2d(channels, affine=True),
+                    nn.LeakyReLU(0.2)
+                )
             )
 
-        # 7) Classification head
-        self.class_pool = nn.AdaptiveAvgPool2d(1)
-        # A more robust classification head with a hidden layer and dropout
-        self.to_cls     = nn.Sequential(
-            nn.Linear(enc_channels, enc_channels // 2),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(enc_channels // 2, num_domains)
+            self.global_decoder.insert(0,
+                AdainResBlk(channels, channels, style_dim)
+            )
+        # 5. Weather Classifier (must be after channels is finalized)
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels, num_domains)
         )
 
-        # 8) Optional high‐pass filter
-        if w_hpf > 0:
-          #model print(f'Using high-pass filter with weight {w_hpf}')
-            device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.hpf = HighPass(w_hpf, device)
-        else:
-            self.hpf = None
+        # High-pass filter (optional)
+        self.hpf = HighPass(w_hpf) if w_hpf > 0 else None
 
-    def forward(self, x, style_code, masks=None, p=1.0):
-        # ---- Encode ----
-        feat = self.from_rgb(x)
-      #model print(f'Input shape: {feat.shape}, Max: {feat.max().item()}, Min: {feat.min().item()}')
-        for block in self.encode:
-            feat = block(feat)
-      #model print(f'Encoded feature shape: {feat.shape}, Max: {feat.max().item()}, Min: {feat.min().item()}')
-        # ---- Classification ----
-        cls_feat       = self.class_pool(feat).view(feat.size(0), -1)
-      #model print(f'Classification feature shape: {cls_feat.shape}, Max: {cls_feat.max().item()}, Min: {cls_feat.min().item()}')
-        weather_logits = self.to_cls(cls_feat)
-      #model print(f'Weather logits shape: {weather_logits.shape}, Max: {weather_logits.max().item()}, Min: {weather_logits.min().item()}')
+    def forward(self, x, style_code, masks=None):
+        """
+        Forward pass through WeatherGAN generator
+        Args:
+            x: Input image tensor (B, 3, H, W)
+            style_code: Style vector (B, style_dim)
+        Returns:
+            output: Translated image
+            seg_map: Weather segmentation map
+            clues_mask: Weather clues mask
+            weather_logits: Weather classification logits
+        """
+        # --- Shared Encoder ---
+        h = self.from_rgb(x)
+        for block in self.encoder:
+            h = block(h)
+        
+        # --- Weather Classification ---
+        weather_logits = self.classifier(h)
+        
+        # --- Weather Segmentation (Domain-Invariant) ---
+        seg_feat = h
+        for block in self.seg_decoder:
+            seg_feat = block(seg_feat)
+        seg_map = self.to_seg(seg_feat)
+        
+        # --- Weather Clues Processing (Domain-Specific) ---
+        # Detach segmentation to preserve domain-invariance
+        clues_input = seg_map.detach()
+        clues_mask = self.clue_processor(clues_input, style_code)
+        
+        # --- Global Weather Translation (Domain-Specific) ---
+        glo_feat = h
+        for block in self.global_decoder:
+            glo_feat = block(glo_feat, style_code)
+        glo_out = self.to_rgb(glo_feat)
+        
+        # Apply high-pass filter if enabled
+        # print(f"glo_out shape: {glo_out.shape}, Max: {glo_out.max().item()}, Min: {glo_out.min().item()}, Mean: {glo_out.mean().item()}")
+        # if self.hpf:
+        #     glo_out = self.hpf(glo_out)
+        
+        # --- Final Composition ---
+        # Preserve weather-invariant regions (no gradients to original image)
 
-        # ---- Segmentation Decode ----
-        seg_logits = feat
-        for blk in self.decode_seg:
-            seg_logits = blk(seg_logits)
-      #model print(f'Segmentation logits shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
-        seg_logits = self.to_seg(seg_logits)
-      #model print(f'Segmentation logits after to_seg shape: {seg_logits.shape}, Max: {seg_logits.max().item()}, Min: {seg_logits.min().item()}')
+        # print(f"clues_mask shape: {clues_mask.shape}, Max: {clues_mask.max().item()}, Min: {clues_mask.min().item()}, Mean: {clues_mask.mean().item()}")
+        # print(f"glo_out shape: {glo_out.shape}, Max: {glo_out.max().item()}, Min: {glo_out.min().item()}, Mean: {glo_out.mean().item()}")
 
-        # The weather-clue decoder branch is removed.
-        # The clue mask is now generated directly from the segmentation logits and the style code, using AdaIN.
-        clues_feat = self.to_clues(seg_logits.detach(), style_code)
-        raw_clues_logits = self.to_mask(clues_feat)
-
-        # c) Global feature decoder
-        glo_feat = feat
-        for blk in self.decode_glo:
-            glo_feat = blk(glo_feat, style_code)
-      #model print(f'Global feature shape: {glo_feat.shape}, Max: {glo_feat.max().item()}, Min: {glo_feat.min().item()}')
-        glo = self.to_glo(glo_feat)  # (B,3,H,W)
-      #model print(f'Global output shape: {glo.shape}, Max: {glo.max().item()}, Min: {glo.min().item()}')
-
-        # ---- Blend & Return ----
-        # expand mask to 3 channels
-        clues_logits = raw_clues_logits
-        if clues_logits.shape[1] == 1:
-            clues_logits = clues_logits.expand(-1, 3, -1, -1)
-        # print(f'Clue logits==Shape: {clues_logits.shape} Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}')
-      #model print(f"Clue logits shape after expand: {clues_logits.shape}, Max: {clues_logits.max().item():.2f}, Min: {clues_logits.min().item():.2f}, Mean: {clues_logits.mean().item():.2f}")
-        out = clues_logits * glo + (1 - clues_logits) * x
-      #model print(f'Output shape: {out.shape}, Max: {out.max().item()}, Min: {out.min().item()}')
-        return out, seg_logits, weather_logits, raw_clues_logits
-
-
-
+        
+        # clues_mask = clues_mask*2
+        with torch.no_grad():
+            preserved = x * (1 - clues_mask)
+        
+        # Combine with weather-translated regions
+        translated = glo_out * clues_mask
+        output = preserved + translated
+        
+        return output, seg_map, weather_logits, clues_mask
+        # return {
+        #     'image': output,
+        #     'seg': seg_map,
+        #     'weather_logits': weather_logits,
+        #     'clues': clues_mask
+        # }
 
 
 
@@ -393,18 +394,18 @@ class Discriminator(nn.Module):
         super().__init__()
         dim_in = 2**14 // img_size
         blocks = []
-        blocks += [nn.Conv2d(3, dim_in, 3, 1, 1)]
+        blocks += [spectral_norm(nn.Conv2d(3, dim_in, 3, 1, 1))]
 
         repeat_num = int(np.log2(img_size)) - 2
         for _ in range(repeat_num):
             dim_out = min(dim_in*2, max_conv_dim)
-            blocks += [ResBlk(dim_in, dim_out, downsample=True)]
+            blocks += [ResBlk(dim_in, dim_out, downsample=True, use_spectral_norm=True)]
             dim_in = dim_out
 
         blocks += [nn.LeakyReLU(0.2)]
-        blocks += [nn.Conv2d(dim_out, dim_out, 4, 1, 0)]
+        blocks += [spectral_norm(nn.Conv2d(dim_out, dim_out, 4, 1, 0))]
         blocks += [nn.LeakyReLU(0.2)]
-        blocks += [nn.Conv2d(dim_out, num_domains, 1, 1, 0)]
+        blocks += [spectral_norm(nn.Conv2d(dim_out, num_domains, 1, 1, 0))]
         self.main = nn.Sequential(*blocks)
 
     def forward(self, x, y):
@@ -417,11 +418,32 @@ class Discriminator(nn.Module):
         return out
 
 
+
+
+# Custom module for processing clues with style conditioning
+class ClueProcessor(nn.Module):
+    def __init__(self, in_ch, style_dim):
+        super().__init__()
+        self.conv1 = ModulatedConv2d(in_ch, 64, 3, style_dim)
+        self.act1 = nn.LeakyReLU(0.2)
+        self.conv2 = ModulatedConv2d(64, 64, 3, style_dim)
+        self.act2 = nn.LeakyReLU(0.2)
+        self.conv3 = nn.Conv2d(64, 1, 1)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, x, s):
+        x = self.conv1(x, s)
+        x = self.act1(x)
+        x = self.conv2(x, s)
+        x = self.act2(x)
+        x = self.conv3(x)
+        return self.sigmoid(x)
+
+
 def build_model(args):
     # Build generator with segmentation classes
     generator = nn.DataParallel(Generator(
         args.img_size, args.style_dim, args.max_conv_dim,
-        args.w_hpf, args.num_domains, args.seg_classes))
+        args.num_domains, args.seg_classes, args.w_hpf))
     mapping_network = nn.DataParallel(MappingNetwork(args.latent_dim, args.style_dim, args.num_domains))
     style_encoder = nn.DataParallel(StyleEncoder(args.img_size, args.style_dim, args.num_domains, args.max_conv_dim))
     discriminator = nn.DataParallel(Discriminator(args.img_size, args.num_domains, args.max_conv_dim))

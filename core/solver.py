@@ -105,8 +105,10 @@ class Solver(nn.Module):
             self.percep = VGGPerceptualLoss(self.device)
             # Ensure no gradients are computed for perceptual network
             for p in self.percep.parameters(): p.requires_grad = False
+            # Move to device before DataParallel
+            self.percep = self.percep.to(self.device)
             # DataParallelize VGG perceptual loss across available GPUs
-            # self.percep = nn.DataParallel(self.percep)
+            self.percep = nn.DataParallel(self.percep)
             # Expose in nets for compute_g_loss lookup
             self.nets['percep'] = self.percep
             
@@ -345,7 +347,6 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
 
     # NEW: mask regularization loss to prevent it from collapsing to zero
     # This encourages the average mask value to increase, forcing the `glo` path to be used.
-    lambda_mask = 1.0
     loss_mask = -torch.mean(clues_logits)
 
     # cycle structural perceptual consistency (Eq.7): SSIM + perceptual VGG loss
@@ -355,7 +356,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
     # SSIM term between x and reconstructed image
     loss_cyc_ssim = 1 - nets.ssim(x_real, x_rec)
     # perceptual VGG term
-    loss_cyc_per = nets.percep(x_rec, x_real) if args.lambda_beta > 0 else 0
+    loss_cyc_per = (nets.percep(x_rec, x_real).mean() if args.lambda_beta > 0 else 0)
     # total cycle loss
     loss_cyc = loss_cyc_ssim + loss_cyc_per
 
@@ -384,7 +385,7 @@ def compute_g_loss(nets, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None, m
         - args.lambda_ds * loss_ds \
         + args.lambda_cyc * loss_cyc \
         + args.lambda_seg * loss_seg \
-        + lambda_mask * loss_mask
+        + args.lambda_mask * loss_mask
 
         # + args.lambda_inv * loss_inv \
     return loss, Munch(
@@ -426,44 +427,49 @@ def r1_reg(d_out, x_in):
 
 # Add VGGPerceptualLoss implementation for perceptual loss
 class VGGPerceptualLoss(nn.Module):
-    def __init__(self, device, layers=[20]):
+    def __init__(self, resize=True, layers=[3, 8, 15, 22]):
         super().__init__()
-        self.device = device
-        self.selected = set(layers)
-        # Only load up to the highest required layer to save GPU memory
-        vgg_full = vgg16(pretrained=True)
-        max_idx = max(self.selected)
-        all_layers = list(vgg_full.features[: max_idx + 1])
-        # free the rest of the model
-        del vgg_full
-        # split layers into two contiguous parts for two-GPU assignment
-        if torch.cuda.device_count() > 1:
-            dev1 = torch.device('cuda:0')
-            dev0 = torch.device('cuda:1')
-        else:
-            dev0 = device
-            dev1 = device
-        split_idx = len(all_layers) // 2
-        self.layers = nn.ModuleList()
-        self.devices = []
-        for idx, layer in enumerate(all_layers):
-            # first half to dev0, second half to dev1
-            dev = dev0 if idx < split_idx else dev1
-            layer.to(dev).eval()
-            for p in layer.parameters(): p.requires_grad = False
-            self.layers.append(layer)
-            self.devices.append(dev)
+        self.resize = resize
+        self.selected_layers = layers
+        
+        # Load pretrained VGG16 (up to last needed layer)
+        vgg = vgg16(pretrained=True).features[:max(layers)+1].eval()
+        
+        # Freeze all parameters
+        for param in vgg.parameters():
+            param.requires_grad_(False)
+        
+        self.vgg = vgg
+        
+        # Register normalization buffers (will move with module)
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1))
 
     def forward(self, gen, real):
-        xg = (gen + 1) / 2
+        # Ensure we're on same device as inputs
+        self.vgg = self.vgg.to(gen.device)
+        
+        # Normalize inputs (assuming gen/real are in [-1,1])
+        xg = (gen + 1) / 2  # [0,1]
         xr = (real + 1) / 2
+        
+        # Normalize for VGG
+        xg = (xg - self.mean) / self.std
+        xr = (xr - self.mean) / self.std
+        
+        # Optional resize to 224x224 if inputs are larger
+        if self.resize and xg.shape[-1] > 224:
+            xg = F.interpolate(xg, size=224, mode='bilinear')
+            xr = F.interpolate(xr, size=224, mode='bilinear')
+        
+        # Extract features
         feats_g, feats_r = [], []
-        for idx, layer in enumerate(self.layers):
-            dev = self.devices[idx % len(self.devices)]
-            xg = layer(xg.to(dev))
-            xr = layer(xr.to(dev))
-            if idx in self.selected:
-                feats_g.append(xg.to(self.device))
-                feats_r.append(xr.to(self.device))
-        loss = sum(F.l1_loss(g, r) for g, r in zip(feats_g, feats_r))
-        return loss
+        for i, layer in enumerate(self.vgg):
+            xg = layer(xg)
+            xr = layer(xr)
+            if i in self.selected_layers:
+                feats_g.append(xg)
+                feats_r.append(xr)
+        
+        # Perceptual loss (L1 or L2)
+        return sum(F.l1_loss(g, r) for g,r in zip(feats_g, feats_r))
